@@ -78,6 +78,38 @@ async function runAutomation(placa) {
     await page.getByRole('button', { name: 'Consultar' }).click();
     await delay(WAIT_TIMES.xlong);
     
+    // ESPERAR 2 SEGUNDOS Y VERIFICAR SI APARECE EL CAMPO DE EMAIL
+    await delay(2000); // Espera específica de 2 segundos después del click
+    
+    // Verificar si el campo de email está presente después de 2 segundos
+    const emailFieldVisible = await page.getByRole('textbox', { name: 'Email' }).isVisible().catch(() => false);
+    
+    // Si el campo de email NO está visible después de 2 segundos, la placa no tiene adeudo
+    if (!emailFieldVisible) {
+      // Verificar si hay algún mensaje de "sin adeudo" o similar
+      const pageContent = await page.textContent('body');
+      const sinAdeudoPatterns = [
+        /sin\s+adeudo/i,
+        /no\s+tiene\s+adeudo/i,
+        /no\s+se\s+encontraron/i,
+        /sin\s+deuda/i,
+        /no\s+existen\s+cargos/i,
+        /pago\s+al\s+corriente/i
+      ];
+      
+      const tieneAdeudo = sinAdeudoPatterns.some(pattern => pattern.test(pageContent));
+      
+      if (!tieneAdeudo) {
+        // Verificar si hay algún mensaje específico de éxito o confirmación
+        const mensajeExito = await page.locator('text=/pago realizado/i, text=/comprobante/i, text=/éxito/i').isVisible().catch(() => false);
+        
+        if (!mensajeExito) {
+          throw new Error('PLACA SIN ADEUDO');
+        }
+      }
+    }
+    
+    // Si llegamos aquí, continuar con el proceso normal (la placa tiene adeudo)
     try {
       await page.waitForSelector('input[name="robot"], input[type="checkbox"]', { 
         timeout: 8000
@@ -250,12 +282,18 @@ app.get('/', (req, res) => {
     },
     ejemplo: {
       url: '/consulta?placa=ABC123',
-      respuesta: {
+      respuesta_exito: {
         placa: "ABC123",
         vehiculo: ["Marca:", "TOYOTA", "Modelo:", "2025", "Linea:", "SIENNA HÍBRIDO", "Tipo:", "XLE, MINI VAN, SISTE", "Color:", "GRIS", "NIV:", "************45180"],
         cargos: ["No se encontraron cargos"],
         subtotal: "SUBTOTAL MONTO SUBSIDIO: -$198.00",
         totalAPagar: "TOTAL A PAGAR: $3,802.00"
+      },
+      respuesta_sin_adeudo: {
+        placa: "XYZ789",
+        mensaje: "PLACA SIN ADEUDO",
+        estado: "Sin deudas pendientes",
+        consultadoEn: "2024-01-15T10:30:00.000Z"
       }
     }
   });
@@ -312,12 +350,26 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
     res.json(respuesta);
     
   } catch (error) {
-    console.error('Error en la consulta:', error);
-    res.status(500).json({
-      error: 'Error en la consulta',
-      message: error.message,
-      detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
-    });
+    console.error('Error en la consulta:', error.message);
+    
+    // Manejar específicamente el caso de "PLACA SIN ADEUDO"
+    if (error.message === 'PLACA SIN ADEUDO') {
+      const respuesta = {
+        placa: req.query.placa ? req.query.placa.trim().toUpperCase().replace(/\s+/g, '') : 'Desconocida',
+        mensaje: 'PLACA SIN ADEUDO',
+        estado: 'Sin deudas pendientes',
+        consultadoEn: new Date().toISOString(),
+        nota: 'La placa no tiene adeudos registrados en el sistema'
+      };
+      
+      res.json(respuesta);
+    } else {
+      res.status(500).json({
+        error: 'Error en la consulta',
+        message: error.message,
+        detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
+      });
+    }
   } finally {
     isProcessing = false;
     requestQueue--;
@@ -365,12 +417,26 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
     res.json(respuesta);
     
   } catch (error) {
-    console.error('Error en la consulta:', error);
-    res.status(500).json({
-      error: 'Error en la consulta',
-      message: error.message,
-      detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
-    });
+    console.error('Error en la consulta:', error.message);
+    
+    // Manejar específicamente el caso de "PLACA SIN ADEUDO"
+    if (error.message === 'PLACA SIN ADEUDO') {
+      const respuesta = {
+        placa: req.body.placa ? req.body.placa.trim().toUpperCase().replace(/\s+/g, '') : 'Desconocida',
+        mensaje: 'PLACA SIN ADEUDO',
+        estado: 'Sin deudas pendientes',
+        consultadoEn: new Date().toISOString(),
+        nota: 'La placa no tiene adeudos registrados en el sistema'
+      };
+      
+      res.json(respuesta);
+    } else {
+      res.status(500).json({
+        error: 'Error en la consulta',
+        message: error.message,
+        detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
+      });
+    }
   } finally {
     isProcessing = false;
     requestQueue--;
@@ -445,8 +511,24 @@ app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) 
     res.send(respuesta);
     
   } catch (error) {
-    console.error('Error en la consulta:', error);
-    res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\nDetalle del error: ${error.message}\n`);
+    console.error('Error en la consulta:', error.message);
+    
+    // Manejar específicamente el caso de "PLACA SIN ADEUDO"
+    if (error.message === 'PLACA SIN ADEUDO') {
+      let respuesta = '';
+      respuesta += '\n' + '='.repeat(50) + '\n';
+      respuesta += `RESULTADOS PARA PLACA: ${req.params.placa.toUpperCase()}\n`;
+      respuesta += '='.repeat(50) + '\n\n';
+      respuesta += '⚠️  PLACA SIN ADEUDO ⚠️\n\n';
+      respuesta += 'La placa consultada no tiene adeudos registrados en el sistema.\n';
+      respuesta += 'No se encontraron deudas pendientes de pago.\n\n';
+      respuesta += '='.repeat(50) + '\n';
+      
+      res.set('Content-Type', 'text/plain');
+      res.send(respuesta);
+    } else {
+      res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\nDetalle del error: ${error.message}\n`);
+    }
   } finally {
     isProcessing = false;
     requestQueue--;
@@ -482,6 +564,7 @@ app.get('/consulta-html/:placa', checkSimultaneousRequests, async (req, res) => 
           .content { background: #f9f9f9; padding: 15px; border-radius: 5px; }
           .cargo { margin: 5px 0; }
           .total { font-weight: bold; color: #d9534f; }
+          .sin-adeudo { background: #dff0d8; color: #3c763d; padding: 20px; border-radius: 5px; text-align: center; }
         </style>
       </head>
       <body>
@@ -519,7 +602,40 @@ app.get('/consulta-html/:placa', checkSimultaneousRequests, async (req, res) => 
     res.send(html);
     
   } catch (error) {
-    res.status(500).send('<h1>Error en la consulta</h1><p>Verifique la placa e intente nuevamente.</p>');
+    // Manejar específicamente el caso de "PLACA SIN ADEUDO"
+    if (error.message === 'PLACA SIN ADEUDO') {
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Consulta Vehicular - ${req.params.placa.toUpperCase()}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
+            .sin-adeudo { background: #dff0d8; color: #3c763d; padding: 40px; border-radius: 10px; margin: 50px auto; max-width: 600px; }
+            h1 { color: #3c763d; }
+            .icon { font-size: 48px; margin-bottom: 20px; }
+          </style>
+        </head>
+        <body>
+          <div class="sin-adeudo">
+            <div class="icon">✅</div>
+            <h1>PLACA SIN ADEUDO</h1>
+            <h2>Placa: ${req.params.placa.toUpperCase()}</h2>
+            <p>La placa consultada no tiene adeudos registrados en el sistema.</p>
+            <p>No se encontraron deudas pendientes de pago.</p>
+            <p><strong>Estado: Sin deudas pendientes</strong></p>
+            <p>Consultado el: ${new Date().toLocaleString()}</p>
+          </div>
+        </body>
+        </html>
+      `;
+      
+      res.set('Content-Type', 'text/html');
+      res.send(html);
+    } else {
+      res.status(500).send('<h1>Error en la consulta</h1><p>Verifique la placa e intente nuevamente.</p>');
+    }
   } finally {
     isProcessing = false;
     requestQueue--;
@@ -539,4 +655,5 @@ app.listen(port, () => {
   console.log(`   GET  /consulta-html/ABC123`);
   console.log(`   GET  /health`);
   console.log(`   GET  /`);
+  console.log(`\n⚠️  NOTA: Si una placa no tiene adeudo, se mostrará el mensaje "PLACA SIN ADEUDO"`);
 });
