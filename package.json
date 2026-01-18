@@ -1,11 +1,11 @@
 {
   "name": "consulta-vehicular-api",
   "version": "1.0.0",
-  "description": "API para consulta de estado de cuenta vehicular",
+  "description": "API para consulta de estado de cuenta vehicular con proxy",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "prestart": "npx playwright install chromium"
+    "dev": "nodemon index.js"
   },
   "dependencies": {
     "express": "^4.18.2",
