@@ -95,207 +95,113 @@ async function runAutomation(placa) {
     await page.getByRole('button', { name: 'Ver estado de cuenta' }).click();
     await delay(WAIT_TIMES.xxlong);
     
-    // Esperar a que carguen los datos
-    await delay(WAIT_TIMES.xlong);
+    // Extraer datos limpios
+    const pageContent = await page.textContent('body');
+    const lines = pageContent.split('\n').map(line => line.trim()).filter(line => {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) return false;
+      const exclusionPatterns = [
+        'Selecciona el metodo de pago:',
+        'Tarjeta de Crédito/Débito',
+        'Línea de Referencia Bancaria',
+        'Te redireccionaremos',
+        'Favor de tener habilitados',
+        'Cerrar',
+        'get_ip',
+        'CDATA',
+        '$(\'#modalCargar\')',
+        '//<![CDATA[',
+        '//]]>',
+        'function get_ip'
+      ];
+      return !exclusionPatterns.some(pattern => trimmedLine.includes(pattern));
+    });
     
-    // Extraer datos de manera más robusta
-    const vehicleInfo = [];
-    const charges = [];
-    let subtotal = '';
+    // Procesar información del vehículo
+    let vehicleInfo = [];
+    let charges = [];
     let totalAPagar = '';
+    let subtotal = '';
     
-    // 1. Extraer información del vehículo usando selectores más específicos
-    try {
-      // Buscar elementos que contengan información del vehículo
-      const vehicleElements = await page.$$eval('td, span, div, label', elements => 
-        elements
-          .map(el => el.textContent.trim())
-          .filter(text => text.length > 0)
-          .filter(text => {
-            const patterns = [
-              /Marca:/i,
-              /Modelo:/i,
-              /Línea:/i,
-              /Linea:/i,
-              /Tipo:/i,
-              /Color:/i,
-              /NIV:/i,
-              /Placa:/i,
-              /Año:/i,
-              /Verificado/i
-            ];
-            return patterns.some(pattern => pattern.test(text));
-          })
-      );
-      
-      vehicleInfo.push(...vehicleElements);
-    } catch (error) {
-      console.log('Error extrayendo información del vehículo:', error.message);
-    }
+    // Encontrar información del vehículo
+    const vehicleKeywords = ['Marca:', 'Modelo:', 'Linea:', 'Tipo:', 'Color:', 'NIV:'];
     
-    // 2. Extraer cargos - buscar tablas o listas de cargos
-    try {
-      // Intentar encontrar tablas de cargos
-      const tableData = await page.$$eval('table, tbody, tr, td', elements => {
-        const results = [];
-        elements.forEach(el => {
-          const text = el.textContent.trim();
-          // Buscar patrones de cargos (año seguido de $)
-          if (text.match(/\d{4}\s*\$[\d,]+\.?\d*/) || text.match(/\$\s*[\d,]+\.?\d*/)) {
-            results.push(text);
-          }
-        });
-        return results;
-      });
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       
-      // Filtrar y limpiar los cargos encontrados
-      const filteredCharges = tableData.filter(charge => {
-        // Excluir líneas que no son cargos reales
-        const excludePatterns = [
-          /TOTAL/i,
-          /SUBTOTAL/i,
-          /PAGAR/i,
-          /CARGANDO/i,
-          /Verificado/i,
-          /Email/i
-        ];
-        return !excludePatterns.some(pattern => pattern.test(charge));
-      });
-      
-      charges.push(...filteredCharges);
-      
-      // Si no encontramos cargos, buscar en todo el texto
-      if (charges.length === 0) {
-        const allText = await page.textContent('body');
-        const lines = allText.split('\n');
-        
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          // Buscar líneas que parezcan cargos (contienen año y signo de dólar)
-          if (trimmedLine.match(/\d{4}.*\$/) || trimmedLine.match(/\$\s*[\d,]+\.?\d*/)) {
-            // Filtrar líneas no deseadas
-            if (!trimmedLine.includes('TOTAL') && 
-                !trimmedLine.includes('SUBTOTAL') && 
-                !trimmedLine.includes('MONTO CARGOS')) {
-              charges.push(trimmedLine);
-            }
-          }
+      // Capturar información del vehículo
+      if (line.includes('Marca:')) {
+        vehicleInfo.push('Marca:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('Modelo:')) {
+        vehicleInfo.push('Modelo:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('Linea:')) {
+        vehicleInfo.push('Linea:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('Tipo:')) {
+        vehicleInfo.push('Tipo:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('Color:')) {
+        vehicleInfo.push('Color:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('NIV:')) {
+        vehicleInfo.push('NIV:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
         }
       }
-    } catch (error) {
-      console.log('Error extrayendo cargos:', error.message);
+      
+      // Capturar cargos
+      if (line.match(/\d{4}\s+\$/)) {
+        charges.push(line);
+      }
+      
+      // Capturar subtotal
+      if (line.includes('SUBTOTAL') && !subtotal) {
+        subtotal = line;
+      }
+      
+      // Capturar total a pagar
+      if ((line.includes('TOTAL A PAGAR') || line.match(/TOTAL.*PAGAR/i)) && !totalAPagar) {
+        totalAPagar = line;
+      }
     }
     
-    // 3. Buscar SUBTOTAL y TOTAL A PAGAR de manera más agresiva
-    try {
-      const allText = await page.textContent('body');
-      const lines = allText.split('\n');
-      
-      // Buscar SUBTOTAL
+    // Si no encontramos total a pagar, buscar patrones alternativos
+    if (!totalAPagar) {
       for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (trimmedLine.match(/SUBTOTAL/i)) {
-          subtotal = trimmedLine;
+        if (line.match(/PAGO\s*TOTAL/i) || line.match(/TOTAL.*\$\d/)) {
+          totalAPagar = line;
           break;
         }
       }
-      
-      // Buscar TOTAL A PAGAR con varios patrones
-      const totalPatterns = [
-        /TOTAL\s*A\s*PAGAR/i,
-        /TOTAL\s+PAGAR/i,
-        /PAGO\s+TOTAL/i,
-        /TOTAL\s+MONTO\s+CARGOS/i,
-        /MONTO\s+TOTAL/i
-      ];
-      
-      for (const line of lines) {
-        const trimmedLine = line.trim();
-        for (const pattern of totalPatterns) {
-          if (pattern.test(trimmedLine)) {
-            totalAPagar = trimmedLine;
-            break;
-          }
-        }
-        if (totalAPagar) break;
-      }
-      
-      // Si aún no encontramos, buscar cualquier línea que empiece con TOTAL y tenga signo de dólar
-      if (!totalAPagar) {
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          if (trimmedLine.match(/^TOTAL/i) && trimmedLine.match(/\$/)) {
-            totalAPagar = trimmedLine;
-            break;
-          }
-        }
-      }
-      
-      // Último recurso: buscar cualquier signo de dólar que pueda ser el total
-      if (!totalAPagar) {
-        const dollarMatches = allText.match(/\$\s*[\d,]+\.?\d*/g);
-        if (dollarMatches && dollarMatches.length > 0) {
-          // Tomar el último monto de dólar como posible total
-          totalAPagar = `TOTAL APROXIMADO: ${dollarMatches[dollarMatches.length - 1]}`;
-        }
-      }
-    } catch (error) {
-      console.log('Error buscando totales:', error.message);
     }
     
-    // 4. Si no encontramos información suficiente, intentar un enfoque diferente
-    if (vehicleInfo.length === 0 || charges.length === 0) {
-      console.log('Información insuficiente, intentando método alternativo...');
-      
-      // Tomar captura del HTML completo para análisis
-      const pageContent = await page.content();
-      
-      // Buscar información usando regex más agresivos
-      const marcaMatch = pageContent.match(/Marca:([^<]+)/i);
-      const modeloMatch = pageContent.match(/Modelo:([^<]+)/i);
-      const lineaMatch = pageContent.match(/L[ií]nea:([^<]+)/i);
-      const tipoMatch = pageContent.match(/Tipo:([^<]+)/i);
-      const colorMatch = pageContent.match(/Color:([^<]+)/i);
-      const nivMatch = pageContent.match(/NIV:([^<]+)/i);
-      
-      if (marcaMatch) vehicleInfo.push(`Marca: ${marcaMatch[1].trim()}`);
-      if (modeloMatch) vehicleInfo.push(`Modelo: ${modeloMatch[1].trim()}`);
-      if (lineaMatch) vehicleInfo.push(`Línea: ${lineaMatch[1].trim()}`);
-      if (tipoMatch) vehicleInfo.push(`Tipo: ${tipoMatch[1].trim()}`);
-      if (colorMatch) vehicleInfo.push(`Color: ${colorMatch[1].trim()}`);
-      if (nivMatch) vehicleInfo.push(`NIV: ${nivMatch[1].trim()}`);
-      
-      // Buscar cargos con regex
-      const cargoRegex = /\d{4}[^$]*\$[\d,]+\.?\d*/gi;
-      const cargoMatches = pageContent.match(cargoRegex);
-      if (cargoMatches) {
-        charges.push(...cargoMatches.map(c => c.trim()));
-      }
-    }
-    
-    // Asegurar que siempre haya datos
-    if (vehicleInfo.length === 0) {
-      vehicleInfo.push('Información del vehículo no disponible');
-    }
-    
-    if (charges.length === 0) {
-      charges.push('No se encontraron cargos registrados');
-    }
-    
-    if (!subtotal) {
-      subtotal = 'SUBTOTAL: No disponible';
-    }
-    
+    // Si aún no hay total, buscar en el contenido completo
     if (!totalAPagar) {
-      totalAPagar = 'TOTAL A PAGAR: No disponible';
+      const totalMatch = pageContent.match(/TOTAL\s*A\s*PAGAR[^$\n]*\$?\s*[\d,]+\.?\d*/gi);
+      if (totalMatch && totalMatch.length > 0) {
+        totalAPagar = totalMatch[0].trim();
+      }
     }
     
     return {
       placa,
-      vehiculo: vehicleInfo.filter((line, index, arr) => line && arr.indexOf(line) === index),
-      cargos: charges,
-      subtotal,
-      totalAPagar
+      vehiculo: vehicleInfo.filter(line => line && line.trim()),
+      cargos: charges.length > 0 ? charges : ['No se encontraron cargos'],
+      subtotal: subtotal || 'SUBTOTAL: No disponible',
+      totalAPagar: totalAPagar || 'TOTAL A PAGAR: No disponible'
     };
     
   } catch (error) {
@@ -324,9 +230,6 @@ function checkSimultaneousRequests(req, res, next) {
   isProcessing = true;
   console.log(`✅ Solicitud aceptada - Iniciando proceso`);
   
-  // Guardar referencia para limpiar al finalizar
-  req._processing = true;
-  
   next();
 }
 
@@ -342,16 +245,17 @@ app.get('/', (req, res) => {
     endpoints: {
       consulta: 'GET /consulta?placa=ABC123',
       consultaPost: 'POST /consulta con JSON body { "placa": "ABC123" }',
-      health: 'GET /health'
+      health: 'GET /health',
+      consola: 'GET /consulta-consola/:placa'
     },
     ejemplo: {
       url: '/consulta?placa=ABC123',
       respuesta: {
         placa: "ABC123",
-        vehiculo: ["Marca: TOYOTA", "Modelo: COROLLA"],
-        cargos: ["2024 $1,500.00"],
-        subtotal: "SUBTOTAL: $1,500.00",
-        totalAPagar: "TOTAL A PAGAR: $1,500.00"
+        vehiculo: ["Marca:", "TOYOTA", "Modelo:", "2025", "Linea:", "SIENNA HÍBRIDO", "Tipo:", "XLE, MINI VAN, SISTE", "Color:", "GRIS", "NIV:", "************45180"],
+        cargos: ["No se encontraron cargos"],
+        subtotal: "SUBTOTAL MONTO SUBSIDIO: -$198.00",
+        totalAPagar: "TOTAL A PAGAR: $3,802.00"
       }
     }
   });
@@ -397,7 +301,6 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
     
-    // Agregar tiempo de consulta como campo extra (opcional)
     const respuesta = {
       ...resultados,
       tiempoConsulta: `${tiempo} segundos`,
@@ -416,7 +319,6 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
       detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
     });
   } finally {
-    // Liberar para siguiente solicitud
     isProcessing = false;
     requestQueue--;
     console.log(`🔄 Sistema liberado. Estado: disponible`);
@@ -452,7 +354,6 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
     
-    // Agregar tiempo de consulta como campo extra (opcional)
     const respuesta = {
       ...resultados,
       tiempoConsulta: `${tiempo} segundos`,
@@ -471,7 +372,6 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
       detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
     });
   } finally {
-    // Liberar para siguiente solicitud
     isProcessing = false;
     requestQueue--;
     console.log(`🔄 Sistema liberado. Estado: disponible`);
@@ -506,18 +406,31 @@ app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) 
     
     respuesta += '\nINFORMACION DEL VEHICULO:\n';
     respuesta += '-'.repeat(30) + '\n';
-    if (resultados.vehiculo.length > 0) {
-      resultados.vehiculo.forEach(linea => respuesta += linea + '\n');
-    } else {
-      respuesta += 'No se encontró información del vehículo\n';
+    
+    // Formatear la información del vehículo
+    let currentKey = '';
+    for (let i = 0; i < resultados.vehiculo.length; i++) {
+      const item = resultados.vehiculo[i];
+      if (item.endsWith(':')) {
+        currentKey = item;
+        respuesta += currentKey + '\n';
+      } else if (currentKey && i > 0 && resultados.vehiculo[i - 1].endsWith(':')) {
+        respuesta += item + '\n';
+      } else {
+        respuesta += item + '\n';
+      }
     }
     
     respuesta += '\nCARGOS:\n';
     respuesta += '-'.repeat(30) + '\n';
-    if (resultados.cargos.length > 0) {
-      resultados.cargos.forEach((cargo, index) => {
-        respuesta += `${index + 1}. ${cargo}\n`;
-      });
+    if (resultados.cargos && resultados.cargos.length > 0) {
+      if (resultados.cargos[0] === 'No se encontraron cargos') {
+        respuesta += 'No se encontraron cargos\n';
+      } else {
+        resultados.cargos.forEach((cargo, index) => {
+          respuesta += `${index + 1}. ${cargo}\n`;
+        });
+      }
     } else {
       respuesta += 'No se encontraron cargos\n';
     }
@@ -535,10 +448,81 @@ app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) 
     console.error('Error en la consulta:', error);
     res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\nDetalle del error: ${error.message}\n`);
   } finally {
-    // Liberar para siguiente solicitud
     isProcessing = false;
     requestQueue--;
     console.log(`🔄 Sistema liberado. Estado: disponible`);
+  }
+});
+
+// Endpoint para formato HTML
+app.get('/consulta-html/:placa', checkSimultaneousRequests, async (req, res) => {
+  try {
+    const { placa } = req.params;
+    
+    if (!placa) {
+      isProcessing = false;
+      requestQueue--;
+      return res.status(400).send('<h1>Error: Placa requerida</h1>');
+    }
+    
+    const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
+    const resultados = await runAutomation(placaLimpia);
+    
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Consulta Vehicular - ${resultados.placa}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 20px; }
+          .header { background: #f0f0f0; padding: 15px; border-radius: 5px; }
+          .section { margin: 20px 0; }
+          .title { font-weight: bold; color: #333; }
+          .content { background: #f9f9f9; padding: 15px; border-radius: 5px; }
+          .cargo { margin: 5px 0; }
+          .total { font-weight: bold; color: #d9534f; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>Resultados para placa: ${resultados.placa}</h1>
+          <p>Consultado el: ${new Date().toLocaleString()}</p>
+        </div>
+        
+        <div class="section">
+          <h2 class="title">Información del Vehículo</h2>
+          <div class="content">
+            ${resultados.vehiculo.map(item => `<p>${item}</p>`).join('')}
+          </div>
+        </div>
+        
+        <div class="section">
+          <h2 class="title">Cargos</h2>
+          <div class="content">
+            ${resultados.cargos.map((cargo, index) => `<div class="cargo">${index + 1}. ${cargo}</div>`).join('')}
+          </div>
+        </div>
+        
+        <div class="section">
+          <h2 class="title">Resumen</h2>
+          <div class="content">
+            <p><strong>${resultados.subtotal}</strong></p>
+            <p class="total">${resultados.totalAPagar}</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+    
+    res.set('Content-Type', 'text/html');
+    res.send(html);
+    
+  } catch (error) {
+    res.status(500).send('<h1>Error en la consulta</h1><p>Verifique la placa e intente nuevamente.</p>');
+  } finally {
+    isProcessing = false;
+    requestQueue--;
   }
 });
 
@@ -552,5 +536,7 @@ app.listen(port, () => {
   console.log(`   GET  /consulta?placa=ABC123`);
   console.log(`   POST /consulta`);
   console.log(`   GET  /consulta-consola/ABC123`);
+  console.log(`   GET  /consulta-html/ABC123`);
   console.log(`   GET  /health`);
+  console.log(`   GET  /`);
 });
