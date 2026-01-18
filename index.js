@@ -222,6 +222,16 @@ app.get('/', (req, res) => {
       consulta: 'GET /consulta?placa=ABC123',
       consultaPost: 'POST /consulta con JSON body { "placa": "ABC123" }',
       health: 'GET /health'
+    },
+    ejemplo: {
+      url: '/consulta?placa=ABC123',
+      respuesta: {
+        placa: "ABC123",
+        vehiculo: ["Marca: TOYOTA", "Modelo: COROLLA"],
+        cargos: ["2024 $1,500.00"],
+        subtotal: "SUBTOTAL: $1,500.00",
+        totalAPagar: "TOTAL A PAGAR: $1,500.00"
+      }
     }
   });
 });
@@ -241,8 +251,7 @@ app.get('/consulta', async (req, res) => {
     
     if (!placa) {
       return res.status(400).json({
-        success: false,
-        error: 'La placa es requerida. Ejemplo: /consulta?placa=ABC123'
+        error: 'Placa requerida. Ejemplo: /consulta?placa=ABC123'
       });
     }
     
@@ -250,7 +259,6 @@ app.get('/consulta', async (req, res) => {
     
     if (!placaLimpia) {
       return res.status(400).json({
-        success: false,
         error: 'Placa requerida'
       });
     }
@@ -262,32 +270,23 @@ app.get('/consulta', async (req, res) => {
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
     
-    const response = {
-      success: true,
-      placa: resultados.placa,
-      timestamp: new Date().toISOString(),
+    // Agregar tiempo de consulta como campo extra (opcional)
+    const respuesta = {
+      ...resultados,
       tiempoConsulta: `${tiempo} segundos`,
-      informacion: {
-        vehiculo: resultados.vehiculo.length > 0 ? resultados.vehiculo : ['No se encontró información del vehículo'],
-        cargos: resultados.cargos.length > 0 ? resultados.cargos.map((cargo, index) => `${index + 1}. ${cargo}`) : ['No se encontraron cargos'],
-        subtotal: resultados.subtotal,
-        totalAPagar: resultados.totalAPagar
-      }
+      consultadoEn: new Date().toISOString()
     };
     
-    res.json(response);
+    console.log(`Consulta completada en ${tiempo} segundos`);
+    
+    res.json(respuesta);
     
   } catch (error) {
     console.error('Error en la consulta:', error);
     res.status(500).json({
-      success: false,
       error: 'Error en la consulta',
       message: error.message,
-      sugerencias: [
-        'Verifique la conexión a internet',
-        'El proxy puede estar temporalmente no disponible',
-        'Verifique que la placa sea correcta'
-      ]
+      detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
     });
   }
 });
@@ -298,8 +297,7 @@ app.post('/consulta', async (req, res) => {
     
     if (!placa) {
       return res.status(400).json({
-        success: false,
-        error: 'La placa es requerida en el body. Ejemplo: { "placa": "ABC123" }'
+        error: 'Placa requerida en el body. Ejemplo: { "placa": "ABC123" }'
       });
     }
     
@@ -307,7 +305,6 @@ app.post('/consulta', async (req, res) => {
     
     if (!placaLimpia) {
       return res.status(400).json({
-        success: false,
         error: 'Placa requerida'
       });
     }
@@ -319,33 +316,81 @@ app.post('/consulta', async (req, res) => {
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
     
-    const response = {
-      success: true,
-      placa: resultados.placa,
-      timestamp: new Date().toISOString(),
+    // Agregar tiempo de consulta como campo extra (opcional)
+    const respuesta = {
+      ...resultados,
       tiempoConsulta: `${tiempo} segundos`,
-      informacion: {
-        vehiculo: resultados.vehiculo.length > 0 ? resultados.vehiculo : ['No se encontró información del vehículo'],
-        cargos: resultados.cargos.length > 0 ? resultados.cargos.map((cargo, index) => `${index + 1}. ${cargo}`) : ['No se encontraron cargos'],
-        subtotal: resultados.subtotal,
-        totalAPagar: resultados.totalAPagar
-      }
+      consultadoEn: new Date().toISOString()
     };
     
-    res.json(response);
+    console.log(`Consulta completada en ${tiempo} segundos`);
+    
+    res.json(respuesta);
     
   } catch (error) {
     console.error('Error en la consulta:', error);
     res.status(500).json({
-      success: false,
       error: 'Error en la consulta',
       message: error.message,
-      sugerencias: [
-        'Verifique la conexión a internet',
-        'El proxy puede estar temporalmente no disponible',
-        'Verifique que la placa sea correcta'
-      ]
+      detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
     });
+  }
+});
+
+// Endpoint para formato de consola (similar al script original)
+app.get('/consulta-consola/:placa', async (req, res) => {
+  try {
+    const { placa } = req.params;
+    
+    if (!placa) {
+      return res.status(400).send('Error: Placa requerida\n');
+    }
+    
+    const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
+    const startTime = Date.now();
+    
+    console.log(`\nIniciando consulta para placa: ${placaLimpia}`);
+    console.log(`Usando proxy: ${PROXY_CONFIG.server}`);
+    
+    const resultados = await runAutomation(placaLimpia);
+    const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
+    
+    // Formatear respuesta como en la consola
+    let respuesta = '';
+    respuesta += '\n' + '='.repeat(50) + '\n';
+    respuesta += `RESULTADOS PARA PLACA: ${resultados.placa}\n`;
+    respuesta += '='.repeat(50) + '\n';
+    
+    respuesta += '\nINFORMACION DEL VEHICULO:\n';
+    respuesta += '-'.repeat(30) + '\n';
+    if (resultados.vehiculo.length > 0) {
+      resultados.vehiculo.forEach(linea => respuesta += linea + '\n');
+    } else {
+      respuesta += 'No se encontró información del vehículo\n';
+    }
+    
+    respuesta += '\nCARGOS:\n';
+    respuesta += '-'.repeat(30) + '\n';
+    if (resultados.cargos.length > 0) {
+      resultados.cargos.forEach((cargo, index) => {
+        respuesta += `${index + 1}. ${cargo}\n`;
+      });
+    } else {
+      respuesta += 'No se encontraron cargos\n';
+    }
+    
+    respuesta += '\nRESUMEN:\n';
+    respuesta += '-'.repeat(30) + '\n';
+    respuesta += `SUBTOTAL: ${resultados.subtotal}\n`;
+    respuesta += `TOTAL A PAGAR: ${resultados.totalAPagar}\n`;
+    respuesta += `\nTiempo de consulta: ${tiempo} segundos\n`;
+    
+    res.set('Content-Type', 'text/plain');
+    res.send(respuesta);
+    
+  } catch (error) {
+    console.error('Error en la consulta:', error);
+    res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\nDetalle del error: ${error.message}\n`);
   }
 });
 
@@ -353,4 +398,10 @@ app.listen(port, () => {
   console.log(`🚀 API de consulta vehicular iniciada`);
   console.log(`📡 Puerto: ${port}`);
   console.log(`🌐 Proxy: ${PROXY_CONFIG.server}`);
+  console.log(`📧 Email: ${EMAIL}`);
+  console.log(`✅ Endpoints disponibles:`);
+  console.log(`   GET  /consulta?placa=ABC123`);
+  console.log(`   POST /consulta`);
+  console.log(`   GET  /consulta-consola/ABC123`);
+  console.log(`   GET  /health`);
 });
