@@ -26,6 +26,10 @@ const PROXY_CONFIG = {
 
 const EMAIL = process.env.EMAIL || 'hdhdhd78@gmail.com';
 
+// Variable para controlar solicitudes simultáneas
+let isProcessing = false;
+let requestQueue = 0;
+
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function runAutomation(placa) {
@@ -212,12 +216,39 @@ async function runAutomation(placa) {
   }
 }
 
+// Middleware para verificar solicitudes simultáneas
+function checkSimultaneousRequests(req, res, next) {
+  requestQueue++;
+  console.log(`📊 Solicitudes en cola: ${requestQueue}`);
+  
+  if (isProcessing) {
+    requestQueue--;
+    console.log(`❌ Solicitud rechazada - Ya hay una consulta en proceso`);
+    return res.status(429).json({
+      error: 'sin respuesta',
+      mensaje: 'El sistema está procesando otra consulta. Intente nuevamente en unos momentos.',
+      estado: 'ocupado'
+    });
+  }
+  
+  isProcessing = true;
+  console.log(`✅ Solicitud aceptada - Iniciando proceso`);
+  
+  // Guardar referencia para limpiar al finalizar
+  req._processing = true;
+  
+  next();
+}
+
 // Endpoints de la API
 app.get('/', (req, res) => {
   res.json({
     message: 'API de consulta de estado de cuenta vehicular',
     status: 'online',
     proxy: 'activado',
+    solicitudes_simultaneas: '1 máximo',
+    estado_actual: isProcessing ? 'procesando' : 'disponible',
+    cola: requestQueue,
     endpoints: {
       consulta: 'GET /consulta?placa=ABC123',
       consultaPost: 'POST /consulta con JSON body { "placa": "ABC123" }',
@@ -241,15 +272,19 @@ app.get('/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     proxy: 'configurado',
+    procesando: isProcessing,
+    cola: requestQueue,
     service: 'consulta-vehicular-api'
   });
 });
 
-app.get('/consulta', async (req, res) => {
+app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
   try {
     const { placa } = req.query;
     
     if (!placa) {
+      isProcessing = false;
+      requestQueue--;
       return res.status(400).json({
         error: 'Placa requerida. Ejemplo: /consulta?placa=ABC123'
       });
@@ -258,6 +293,8 @@ app.get('/consulta', async (req, res) => {
     const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
     
     if (!placaLimpia) {
+      isProcessing = false;
+      requestQueue--;
       return res.status(400).json({
         error: 'Placa requerida'
       });
@@ -288,14 +325,21 @@ app.get('/consulta', async (req, res) => {
       message: error.message,
       detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
     });
+  } finally {
+    // Liberar para siguiente solicitud
+    isProcessing = false;
+    requestQueue--;
+    console.log(`🔄 Sistema liberado. Estado: disponible`);
   }
 });
 
-app.post('/consulta', async (req, res) => {
+app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
   try {
     const { placa } = req.body;
     
     if (!placa) {
+      isProcessing = false;
+      requestQueue--;
       return res.status(400).json({
         error: 'Placa requerida en el body. Ejemplo: { "placa": "ABC123" }'
       });
@@ -304,6 +348,8 @@ app.post('/consulta', async (req, res) => {
     const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
     
     if (!placaLimpia) {
+      isProcessing = false;
+      requestQueue--;
       return res.status(400).json({
         error: 'Placa requerida'
       });
@@ -334,15 +380,22 @@ app.post('/consulta', async (req, res) => {
       message: error.message,
       detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
     });
+  } finally {
+    // Liberar para siguiente solicitud
+    isProcessing = false;
+    requestQueue--;
+    console.log(`🔄 Sistema liberado. Estado: disponible`);
   }
 });
 
 // Endpoint para formato de consola (similar al script original)
-app.get('/consulta-consola/:placa', async (req, res) => {
+app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) => {
   try {
     const { placa } = req.params;
     
     if (!placa) {
+      isProcessing = false;
+      requestQueue--;
       return res.status(400).send('Error: Placa requerida\n');
     }
     
@@ -391,6 +444,11 @@ app.get('/consulta-consola/:placa', async (req, res) => {
   } catch (error) {
     console.error('Error en la consulta:', error);
     res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\nDetalle del error: ${error.message}\n`);
+  } finally {
+    // Liberar para siguiente solicitud
+    isProcessing = false;
+    requestQueue--;
+    console.log(`🔄 Sistema liberado. Estado: disponible`);
   }
 });
 
@@ -399,6 +457,7 @@ app.listen(port, () => {
   console.log(`📡 Puerto: ${port}`);
   console.log(`🌐 Proxy: ${PROXY_CONFIG.server}`);
   console.log(`📧 Email: ${EMAIL}`);
+  console.log(`🚫 Solicitudes simultáneas: 1 máximo`);
   console.log(`✅ Endpoints disponibles:`);
   console.log(`   GET  /consulta?placa=ABC123`);
   console.log(`   POST /consulta`);
