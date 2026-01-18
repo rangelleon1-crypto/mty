@@ -73,11 +73,11 @@ async function launchBrowserWithTimeout(timeoutMs = 5000) {
 }
 
 // Función para ejecutar el primer clic con timeout de 7 segundos
-async function executeFirstClickWithTimeout(page, requestId, timeoutMs = 7000) {
-  console.log(`[${requestId}] ⏱️ Iniciando timeout de 7 segundos para primer clic...`);
+async function executeFirstClickWithTimeout(page, requestId, attempt, timeoutMs = 7000) {
+  console.log(`[${requestId}] ⏱️ Intento ${attempt}: Timeout de 7 segundos para primer clic...`);
   
   const firstClickPromise = (async () => {
-    console.log(`[${requestId}] 🌐 Navegando a la página...`);
+    console.log(`[${requestId}] 🌐 Intento ${attempt}: Navegando a la página...`);
     
     await page.goto('https://icvnl.gob.mx:1080/estadoctav3/edoctaconsulta#no-back-button', {
       waitUntil: 'domcontentloaded',
@@ -86,7 +86,7 @@ async function executeFirstClickWithTimeout(page, requestId, timeoutMs = 7000) {
     
     await delay(WAIT_TIMES.medium);
     
-    console.log(`[${requestId}] 👆 PRIMER CLIC: Checkbox "Acepto bajo protesta de decir"...`);
+    console.log(`[${requestId}] 👆 Intento ${attempt}: PRIMER CLIC: Checkbox "Acepto bajo protesta de decir"...`);
     await page.getByRole('checkbox', { name: 'Acepto bajo protesta de decir' }).check();
     
     return true;
@@ -94,292 +94,313 @@ async function executeFirstClickWithTimeout(page, requestId, timeoutMs = 7000) {
   
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => {
-      reject(new Error(`TIMEOUT: Primer clic no se completó en ${timeoutMs}ms`));
+      reject(new Error(`TIMEOUT: Intento ${attempt} - Primer clic no se completó en ${timeoutMs}ms`));
     }, timeoutMs);
   });
   
   return await Promise.race([firstClickPromise, timeoutPromise]);
 }
 
-// Función principal con timeout total de 30 segundos
-async function runAutomationWithTimeout(placa, requestId, totalTimeoutMs = 30000) {
+// Función principal con reintentos automáticos
+async function runAutomationWithRetries(placa, requestId, maxRetries = 3) {
   const startTime = Date.now();
   const timeline = {
     requestReceived: startTime,
-    chromiumLaunchStart: 0,
-    chromiumLaunchEnd: 0,
-    firstClickStart: 0,
-    firstClickEnd: 0,
-    processCompleted: 0,
-    errorOccurred: null
+    attempts: [],
+    finalResult: null
   };
   
-  let browser;
+  let lastError = null;
   
-  try {
-    console.log(`[${requestId}] 🚀 Iniciando chromium.launch()...`);
-    timeline.chromiumLaunchStart = Date.now();
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const attemptStartTime = Date.now();
+    let browser = null;
     
-    // Lanzar navegador con timeout de 5 segundos
-    browser = await launchBrowserWithTimeout(5000);
-    
-    timeline.chromiumLaunchEnd = Date.now();
-    const launchTime = timeline.chromiumLaunchEnd - timeline.chromiumLaunchStart;
-    console.log(`[${requestId}] ✅ chromium.launch() completado en ${launchTime}ms`);
-    
-    // Configurar contexto
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      proxy: PROXY_CONFIG
-    });
-    
-    const page = await context.newPage();
-    
-    // EJECUTAR PRIMER CLIC CON TIMEOUT DE 7 SEGUNDOS
-    console.log(`[${requestId}] ⏰ Iniciando secuencia del primer clic (timeout: 7s)...`);
-    timeline.firstClickStart = Date.now();
-    
-    await executeFirstClickWithTimeout(page, requestId, 7000);
-    
-    timeline.firstClickEnd = Date.now();
-    const firstClickTime = timeline.firstClickEnd - timeline.firstClickStart;
-    console.log(`[${requestId}] ✅ Primer clic completado en ${firstClickTime}ms`);
-    
-    // CONTINUAR CON EL RESTO DEL PROCESO
-    await delay(WAIT_TIMES.short);
-    
-    // Segundo paso: Click en campo de placa
-    await page.getByRole('textbox', { name: 'Placa' }).click();
-    await page.getByRole('textbox', { name: 'Placa' }).fill(placa);
-    await delay(WAIT_TIMES.short);
-    
-    // Tercer paso: Click en div
-    await page.locator('div:nth-child(4)').click();
-    await delay(WAIT_TIMES.long);
-    
-    // Cuarto paso: Click en botón Consultar
-    await page.getByRole('button', { name: 'Consultar' }).click();
-    await delay(WAIT_TIMES.xlong);
+    console.log(`[${requestId}] 🔄 Intento ${attempt}/${maxRetries} iniciando...`);
     
     try {
-      await page.waitForSelector('input[name="robot"], input[type="checkbox"]', { 
-        timeout: 5000
+      // 1. Lanzar navegador
+      console.log(`[${requestId}] 🚀 Intento ${attempt}: chromium.launch()...`);
+      const launchStartTime = Date.now();
+      browser = await launchBrowserWithTimeout(5000);
+      const launchTime = Date.now() - launchStartTime;
+      console.log(`[${requestId}] ✅ Intento ${attempt}: chromium.launch() completado en ${launchTime}ms`);
+      
+      // Configurar contexto
+      const context = await browser.newContext({
+        viewport: { width: 1920, height: 1080 },
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        proxy: PROXY_CONFIG
       });
-      await page.getByRole('checkbox', { name: 'No soy un robot' }).check();
+      
+      const page = await context.newPage();
+      
+      // 2. Intentar primer clic con timeout de 7 segundos
+      console.log(`[${requestId}] ⏰ Intento ${attempt}: Ejecutando primer clic...`);
+      const firstClickStartTime = Date.now();
+      
+      await executeFirstClickWithTimeout(page, requestId, attempt, 7000);
+      
+      const firstClickTime = Date.now() - firstClickStartTime;
+      console.log(`[${requestId}] ✅ Intento ${attempt}: Primer clic completado en ${firstClickTime}ms`);
+      
+      // 3. Si llegamos aquí, el primer clic fue exitoso - CONTINUAR CON EL RESTO
+      await delay(WAIT_TIMES.short);
+      
+      // Segundo paso: Click en campo de placa
+      await page.getByRole('textbox', { name: 'Placa' }).click();
+      await page.getByRole('textbox', { name: 'Placa' }).fill(placa);
+      await delay(WAIT_TIMES.short);
+      
+      // Tercer paso: Click en div
+      await page.locator('div:nth-child(4)').click();
       await delay(WAIT_TIMES.long);
-    } catch (error) {
-      console.log(`[${requestId}] ℹ️ Sin captcha detectado`);
-    }
-    
-    await page.getByRole('textbox', { name: 'Email' }).click();
-    await page.getByRole('textbox', { name: 'Email' }).fill(EMAIL);
-    await delay(WAIT_TIMES.short);
-    
-    await page.getByRole('button', { name: 'Ver estado de cuenta' }).click();
-    await delay(WAIT_TIMES.xxlong);
-    
-    // Extraer datos
-    const pageContent = await page.textContent('body');
-    
-    // Cerrar recursos
-    await page.close();
-    await context.close();
-    await browser.close();
-    
-    // Procesar datos
-    const lines = pageContent.split('\n').filter(line => {
-      const trimmedLine = line.trim();
-      if (!trimmedLine) return false;
-      const exclusionPatterns = [
-        'Selecciona el metodo de pago:',
-        'Tarjeta de Crédito/Débito',
-        'Línea de Referencia Bancaria',
-        'Te redireccionaremos',
-        'Favor de tener habilitados',
-        'Cerrar',
-        'get_ip',
-        'CDATA',
-        '$(\'#modalCargar\')',
-        '//<![CDATA[',
-        '//]]>',
-        'function get_ip'
-      ];
-      return !exclusionPatterns.some(pattern => trimmedLine.includes(pattern));
-    });
-    
-    let vehicleInfo = [];
-    let charges = [];
-    let totalAPagar = '';
-    let subtotal = '';
-    let inVehicleSection = false;
-    let inChargesSection = false;
-    
-    for (const line of lines) {
-      const trimmedLine = line.trim();
       
-      if (trimmedLine.includes('Marca:') || trimmedLine.includes('Modelo:')) {
-        inVehicleSection = true;
-        inChargesSection = false;
+      // Cuarto paso: Click en botón Consultar
+      await page.getByRole('button', { name: 'Consultar' }).click();
+      await delay(WAIT_TIMES.xlong);
+      
+      try {
+        await page.waitForSelector('input[name="robot"], input[type="checkbox"]', { 
+          timeout: 5000
+        });
+        await page.getByRole('checkbox', { name: 'No soy un robot' }).check();
+        await delay(WAIT_TIMES.long);
+      } catch (error) {
+        console.log(`[${requestId}] ℹ️ Intento ${attempt}: Sin captcha detectado`);
       }
       
-      if (trimmedLine.includes('CARGOS DescripciónAñoMonto')) {
-        inVehicleSection = false;
-        inChargesSection = true;
-        continue;
-      }
+      await page.getByRole('textbox', { name: 'Email' }).click();
+      await page.getByRole('textbox', { name: 'Email' }).fill(EMAIL);
+      await delay(WAIT_TIMES.short);
       
-      if (trimmedLine.includes('SUBTOTAL')) {
-        subtotal = trimmedLine;
-        continue;
-      }
+      await page.getByRole('button', { name: 'Ver estado de cuenta' }).click();
+      await delay(WAIT_TIMES.xxlong);
       
-      if (trimmedLine.match(/TOTAL\s*A\s*PAGAR/i) || 
-          trimmedLine.match(/TOTAL\s+.*PAGAR/i) ||
-          trimmedLine.match(/PAGO\s*TOTAL/i)) {
-        totalAPagar = trimmedLine;
-        inChargesSection = false;
-        continue;
-      }
+      // Extraer datos
+      const pageContent = await page.textContent('body');
       
-      if (trimmedLine.includes('TOTAL MONTO CARGOS:')) {
-        if (!totalAPagar) {
-          totalAPagar = trimmedLine;
+      // Cerrar recursos
+      await page.close();
+      await context.close();
+      await browser.close();
+      
+      // Procesar datos
+      const lines = pageContent.split('\n').filter(line => {
+        const trimmedLine = line.trim();
+        if (!trimmedLine) return false;
+        const exclusionPatterns = [
+          'Selecciona el metodo de pago:',
+          'Tarjeta de Crédito/Débito',
+          'Línea de Referencia Bancaria',
+          'Te redireccionaremos',
+          'Favor de tener habilitados',
+          'Cerrar',
+          'get_ip',
+          'CDATA',
+          '$(\'#modalCargar\')',
+          '//<![CDATA[',
+          '//]]>',
+          'function get_ip'
+        ];
+        return !exclusionPatterns.some(pattern => trimmedLine.includes(pattern));
+      });
+      
+      let vehicleInfo = [];
+      let charges = [];
+      let totalAPagar = '';
+      let subtotal = '';
+      let inVehicleSection = false;
+      let inChargesSection = false;
+      
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        
+        if (trimmedLine.includes('Marca:') || trimmedLine.includes('Modelo:')) {
+          inVehicleSection = true;
+          inChargesSection = false;
         }
-        inChargesSection = false;
-        continue;
+        
+        if (trimmedLine.includes('CARGOS DescripciónAñoMonto')) {
+          inVehicleSection = false;
+          inChargesSection = true;
+          continue;
+        }
+        
+        if (trimmedLine.includes('SUBTOTAL')) {
+          subtotal = trimmedLine;
+          continue;
+        }
+        
+        if (trimmedLine.match(/TOTAL\s*A\s*PAGAR/i) || 
+            trimmedLine.match(/TOTAL\s+.*PAGAR/i) ||
+            trimmedLine.match(/PAGO\s*TOTAL/i)) {
+          totalAPagar = trimmedLine;
+          inChargesSection = false;
+          continue;
+        }
+        
+        if (trimmedLine.includes('TOTAL MONTO CARGOS:')) {
+          if (!totalAPagar) {
+            totalAPagar = trimmedLine;
+          }
+          inChargesSection = false;
+          continue;
+        }
+        
+        if (trimmedLine.startsWith('TOTAL') && !totalAPagar && 
+            !trimmedLine.includes('MONTO CARGOS') && 
+            trimmedLine.match(/[\d,]+\.?\d*$/)) {
+          totalAPagar = trimmedLine;
+          inChargesSection = false;
+          continue;
+        }
+        
+        if (inVehicleSection && trimmedLine.includes('Este vehículo')) {
+          inVehicleSection = false;
+        }
+        
+        if (inVehicleSection && trimmedLine) {
+          vehicleInfo.push(trimmedLine);
+        }
+        
+        if (inChargesSection && trimmedLine && trimmedLine.match(/\d{4}\$/)) {
+          charges.push(trimmedLine);
+        }
       }
       
-      if (trimmedLine.startsWith('TOTAL') && !totalAPagar && 
-          !trimmedLine.includes('MONTO CARGOS') && 
-          trimmedLine.match(/[\d,]+\.?\d*$/)) {
-        totalAPagar = trimmedLine;
-        inChargesSection = false;
-        continue;
+      // Buscar TOTAL A PAGAR
+      if (!totalAPagar) {
+        const totalAPagarRegex = /TOTAL\s*A\s*PAGAR[^$\n]*\$?\s*[\d,]+\.?\d*/gi;
+        const totalAPagarMatch = pageContent.match(totalAPagarRegex);
+        if (totalAPagarMatch && totalAPagarMatch.length > 0) {
+          totalAPagar = totalAPagarMatch[0].trim();
+        }
       }
       
-      if (inVehicleSection && trimmedLine.includes('Este vehículo')) {
-        inVehicleSection = false;
+      if (!totalAPagar) {
+        const totalRegex = /TOTAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi;
+        const totalMatches = pageContent.match(totalRegex);
+        if (totalMatches && totalMatches.length > 0) {
+          const filteredTotals = totalMatches.filter(t => !t.includes('MONTO CARGOS'));
+          totalAPagar = filteredTotals.length > 0 ? filteredTotals[0].trim() : totalMatches[0].trim();
+        }
       }
       
-      if (inVehicleSection && trimmedLine) {
-        vehicleInfo.push(trimmedLine);
+      // Si aún no hay total, buscar cualquier patrón de dinero
+      if (!totalAPagar) {
+        const moneyRegex = /\$\s*[\d,]+\.?\d*/g;
+        const moneyMatches = pageContent.match(moneyRegex);
+        if (moneyMatches && moneyMatches.length > 0) {
+          totalAPagar = `TOTAL ENCONTRADO: ${moneyMatches[moneyMatches.length - 1]}`;
+        }
       }
       
-      if (inChargesSection && trimmedLine && trimmedLine.match(/\d{4}\$/)) {
-        charges.push(trimmedLine);
+      // Garantizar que siempre haya datos COMPLETOS
+      if (vehicleInfo.length === 0) {
+        vehicleInfo = [
+          'Marca: No disponible', 
+          'Modelo: No disponible', 
+          'Año: No disponible',
+          'Color: No disponible',
+          'Placa: ' + placa
+        ];
+      }
+      
+      if (charges.length === 0) {
+        charges = [
+          'No se encontraron cargos registrados para esta placa',
+          'Verifique que la placa sea correcta'
+        ];
+      }
+      
+      if (!subtotal) {
+        subtotal = 'SUBTOTAL: $0.00';
+      }
+      
+      if (!totalAPagar) {
+        totalAPagar = 'TOTAL A PAGAR: $0.00';
+      }
+      
+      const attemptTime = Date.now() - attemptStartTime;
+      timeline.attempts.push({
+        attemptNumber: attempt,
+        success: true,
+        duration: attemptTime,
+        firstClickCompleted: true
+      });
+      
+      console.log(`[${requestId}] ✅ Intento ${attempt} completado con éxito en ${attemptTime}ms`);
+      
+      return {
+        placa,
+        vehiculo: vehicleInfo.filter((line, index, arr) => line && arr.indexOf(line) === index),
+        cargos: charges,
+        subtotal: subtotal,
+        totalAPagar: totalAPagar,
+        metadata: {
+          tiempoTotal: `${((Date.now() - startTime) / 1000).toFixed(2)} segundos`,
+          intentosRealizados: attempt,
+          intentosTotales: maxRetries,
+          ultimoIntentoExitoso: true,
+          tiempoUltimoIntento: `${(attemptTime / 1000).toFixed(2)} segundos`,
+          primerClicCompletado: true
+        },
+        rawLines: lines.filter(l => l.trim().length > 0).slice(0, 30)
+      };
+      
+    } catch (error) {
+      // Cerrar navegador si existe
+      if (browser) {
+        try { await browser.close(); } catch (e) {}
+      }
+      
+      const attemptTime = Date.now() - attemptStartTime;
+      lastError = error;
+      
+      timeline.attempts.push({
+        attemptNumber: attempt,
+        success: false,
+        duration: attemptTime,
+        error: error.message,
+        firstClickCompleted: false
+      });
+      
+      console.error(`[${requestId}] ❌ Intento ${attempt} falló en ${attemptTime}ms:`, error.message);
+      
+      // Si no es el último intento, esperar un poco antes de reintentar
+      if (attempt < maxRetries) {
+        const waitTime = 1000; // 1 segundo entre intentos
+        console.log(`[${requestId}] ⏳ Esperando ${waitTime}ms antes del siguiente intento...`);
+        await delay(waitTime);
       }
     }
-    
-    // Buscar TOTAL A PAGAR
-    if (!totalAPagar) {
-      const totalAPagarRegex = /TOTAL\s*A\s*PAGAR[^$\n]*\$?\s*[\d,]+\.?\d*/gi;
-      const totalAPagarMatch = pageContent.match(totalAPagarRegex);
-      if (totalAPagarMatch && totalAPagarMatch.length > 0) {
-        totalAPagar = totalAPagarMatch[0].trim();
-      }
-    }
-    
-    if (!totalAPagar) {
-      const totalRegex = /TOTAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi;
-      const totalMatches = pageContent.match(totalRegex);
-      if (totalMatches && totalMatches.length > 0) {
-        const filteredTotals = totalMatches.filter(t => !t.includes('MONTO CARGOS'));
-        totalAPagar = filteredTotals.length > 0 ? filteredTotals[0].trim() : totalMatches[0].trim();
-      }
-    }
-    
-    // Si aún no hay total, buscar cualquier patrón de dinero
-    if (!totalAPagar) {
-      const moneyRegex = /\$\s*[\d,]+\.?\d*/g;
-      const moneyMatches = pageContent.match(moneyRegex);
-      if (moneyMatches && moneyMatches.length > 0) {
-        totalAPagar = `TOTAL ENCONTRADO: ${moneyMatches[moneyMatches.length - 1]}`;
-      }
-    }
-    
-    // Garantizar que siempre haya datos COMPLETOS
-    if (vehicleInfo.length === 0) {
-      vehicleInfo = [
-        'Marca: No disponible', 
-        'Modelo: No disponible', 
-        'Año: No disponible',
-        'Color: No disponible',
-        'Placa: ' + placa
-      ];
-    }
-    
-    if (charges.length === 0) {
-      charges = [
-        'No se encontraron cargos registrados para esta placa',
-        'Verifique que la placa sea correcta'
-      ];
-    }
-    
-    if (!subtotal) {
-      subtotal = 'SUBTOTAL: $0.00';
-    }
-    
-    if (!totalAPagar) {
-      totalAPagar = 'TOTAL A PAGAR: $0.00';
-    }
-    
-    timeline.processCompleted = Date.now();
-    const tiempoTotal = timeline.processCompleted - startTime;
-    
-    console.log(`[${requestId}] ✅ Proceso completado en ${tiempoTotal}ms`);
-    
-    return {
-      placa,
-      vehiculo: vehicleInfo.filter((line, index, arr) => line && arr.indexOf(line) === index),
-      cargos: charges,
-      subtotal: subtotal,
-      totalAPagar: totalAPagar,
-      metadata: {
-        tiempoTotal: `${(tiempoTotal / 1000).toFixed(2)} segundos`,
-        tiempoHastaPrimerClic: `${((timeline.firstClickEnd - timeline.firstClickStart) / 1000).toFixed(2)} segundos`,
-        primerClicCompletado: true,
-        chromiumLaunchTime: `${((timeline.chromiumLaunchEnd - timeline.chromiumLaunchStart) / 1000).toFixed(2)} segundos`
-      },
-      rawLines: lines.filter(l => l.trim().length > 0).slice(0, 30) // Datos crudos para referencia
-    };
-    
-  } catch (error) {
-    timeline.errorOccurred = {
-      time: Date.now(),
-      message: error.message,
-      stack: error.stack
-    };
-    
-    if (browser) {
-      try { await browser.close(); } catch (e) {}
-    }
-    
-    console.error(`[${requestId}] ❌ Error:`, error.message);
-    
-    // Devolver datos de error COMPLETOS
-    return {
-      placa,
-      vehiculo: [
-        `Error en la consulta: ${error.message}`,
-        'Tipo: ' + (error.message.includes('TIMEOUT') ? 'Timeout' : 'Error de proceso'),
-        'Placa consultada: ' + placa
-      ],
-      cargos: ['No se pudieron obtener los cargos debido a un error'],
-      subtotal: 'SUBTOTAL: Error - ' + (error.message.includes('TIMEOUT') ? 'Timeout excedido' : 'Proceso fallido'),
-      totalAPagar: 'TOTAL A PAGAR: Error - ' + (error.message.includes('TIMEOUT') ? 'Timeout excedido' : 'Proceso fallido'),
-      metadata: {
-        tiempoTotal: `${((Date.now() - startTime) / 1000).toFixed(2)} segundos`,
-        primerClicCompletado: timeline.firstClickEnd ? true : false,
-        error: true,
-        errorType: error.message.includes('TIMEOUT') ? 'TIMEOUT' : 'PROCESS_ERROR',
-        errorMessage: error.message,
-        chromiumLaunchTime: timeline.chromiumLaunchEnd ? 
-          `${((timeline.chromiumLaunchEnd - timeline.chromiumLaunchStart) / 1000).toFixed(2)} segundos` : 'No completado'
-      },
-      rawLines: []
-    };
   }
+  
+  // Si llegamos aquí, todos los intentos fallaron
+  console.error(`[${requestId}] ❌ Todos los ${maxRetries} intentos fallaron`);
+  
+  return {
+    placa,
+    vehiculo: [
+      `Error después de ${maxRetries} intentos: ${lastError?.message || 'Error desconocido'}`,
+      'Todos los intentos fallaron en completar el primer clic',
+      'Placa consultada: ' + placa
+    ],
+    cargos: ['No se pudieron obtener los cargos - Sistema no respondió'],
+    subtotal: 'SUBTOTAL: Error - Sistema no respondió',
+    totalAPagar: 'TOTAL A PAGAR: Error - Sistema no respondió',
+    metadata: {
+      tiempoTotal: `${((Date.now() - startTime) / 1000).toFixed(2)} segundos`,
+      intentosRealizados: maxRetries,
+      intentosTotales: maxRetries,
+      ultimoIntentoExitoso: false,
+      todosLosIntentosFallaron: true,
+      primerClicCompletado: false,
+      errores: timeline.attempts.map(a => a.error).filter(e => e)
+    },
+    rawLines: []
+  };
 }
 
 // Middleware para verificar solicitudes simultáneas
@@ -414,12 +435,14 @@ app.get('/', (req, res) => {
     message: 'API de consulta de estado de cuenta vehicular',
     status: 'online',
     proxy: 'activado',
-    timeoutsConfigurados: {
-      chromiumLaunch: '5 segundos máximo',
-      primerClic: '7 segundos máximo',
-      consultaTotal: '30 segundos máximo'
+    configuracion: {
+      maximoIntentos: 3,
+      timeoutPrimerClic: '7 segundos por intento',
+      timeoutChromiumLaunch: '5 segundos',
+      timeoutTotalConsulta: '45 segundos máximo'
     },
     primerClic: 'Checkbox "Acepto bajo protesta de decir"',
+    reintentos: 'Automáticos - Hasta 3 veces',
     solicitudes_simultaneas: '1 máximo',
     estado_actual: isProcessing ? 'procesando' : 'disponible',
     cola: requestQueue,
@@ -497,19 +520,19 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
     
     console.log(`[${requestId}] 🔍 Iniciando consulta para placa: ${placaLimpia}`);
     
-    // Ejecutar con timeout total de 30 segundos
+    // Ejecutar con timeout total de 45 segundos (3 intentos × 15 segundos)
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => {
-        reject(new Error('TIMEOUT: Consulta total superó los 30 segundos'));
-      }, 30000);
+        reject(new Error('TIMEOUT: Consulta total superó los 45 segundos'));
+      }, 45000);
     });
     
-    const automationPromise = runAutomationWithTimeout(placaLimpia, requestId);
+    const automationPromise = runAutomationWithRetries(placaLimpia, requestId, 3);
     
     const resultados = await Promise.race([automationPromise, timeoutPromise]);
     const tiempoTotal = Date.now() - startTime;
     
-    console.log(`[${requestId}] ✅ Consulta completada en ${tiempoTotal}ms`);
+    console.log(`[${requestId}] ✅ Proceso completado en ${tiempoTotal}ms`);
     
     // Respuesta COMPLETA siempre
     const respuesta = {
@@ -517,12 +540,12 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
       requestId,
       timestamp: new Date().toISOString(),
       tiempoTotal: `${(tiempoTotal / 1000).toFixed(2)} segundos`,
-      estado: resultados.metadata?.error ? 'error' : 'completado',
+      estado: resultados.metadata?.todosLosIntentosFallaron ? 'error' : 'completado',
       primerClic: 'Checkbox "Acepto bajo protesta de decir"',
-      timeoutConfig: {
-        chromiumLaunch: '5 segundos',
-        primerClic: '7 segundos',
-        total: '30 segundos'
+      configuracion: {
+        maximoIntentos: 3,
+        timeoutPrimerClic: '7 segundos por intento',
+        intentosRealizados: resultados.metadata?.intentosRealizados || 0
       },
       procesadoEn: new Date().toISOString()
     };
@@ -554,10 +577,10 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
       error: true,
       mensajeError: error.message,
       primerClic: 'No se alcanzó el primer clic',
-      timeoutConfig: {
-        chromiumLaunch: '5 segundos',
-        primerClic: '7 segundos',
-        total: '30 segundos'
+      configuracion: {
+        maximoIntentos: 3,
+        timeoutPrimerClic: '7 segundos por intento',
+        intentosRealizados: 0
       },
       procesadoEn: new Date().toISOString(),
       metadata: {
@@ -578,10 +601,11 @@ app.listen(port, () => {
   console.log(`📡 Puerto: ${port}`);
   console.log(`🌐 Proxy: ${PROXY_CONFIG.server}`);
   console.log(`📧 Email: ${EMAIL}`);
-  console.log(`⏱️ Timeouts configurados:`);
-  console.log(`   • chromium.launch(): 5 segundos máximo`);
-  console.log(`   • Primer clic: 7 segundos máximo`);
-  console.log(`   • Consulta total: 30 segundos máximo`);
+  console.log(`🔄 Sistema de reintentos:`);
+  console.log(`   • Máximo 3 intentos por solicitud`);
+  console.log(`   • Timeout por intento: 7 segundos para primer clic`);
+  console.log(`   • Timeout total: 45 segundos máximo`);
+  console.log(`   • 1 segundo de espera entre intentos`);
   console.log(`🚫 Solicitudes simultáneas: 1 máximo`);
   console.log(`✅ Endpoints disponibles:`);
   console.log(`   GET  /consulta?placa=ABC123`);
