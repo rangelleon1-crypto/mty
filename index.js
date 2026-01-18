@@ -79,7 +79,7 @@ async function runAutomation(placa) {
     await delay(WAIT_TIMES.xlong);
     
     // ESPERAR 2 SEGUNDOS Y VERIFICAR SI APARECE EL CAMPO DE EMAIL
-    await delay(2000); // Espera específica de 2 segundos después del click
+    await delay(6000); // Espera específica de 2 segundos después del click
     
     // Verificar si el campo de email está presente después de 2 segundos
     const emailFieldVisible = await page.getByRole('textbox', { name: 'Email' }).isVisible().catch(() => false);
