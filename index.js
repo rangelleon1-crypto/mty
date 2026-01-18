@@ -40,7 +40,7 @@ async function runAutomation(placa) {
       '--disable-accelerated-2d-canvas',
       '--disable-web-security',
       '--disable-features=site-per-process',
-      '--proxy-server=' + PROXY_CONFIG.server
+      `--proxy-server=${PROXY_CONFIG.server}`
     ]
   });
   
@@ -124,26 +124,22 @@ async function runAutomation(placa) {
     for (const line of lines) {
       const trimmedLine = line.trim();
       
-      // Detectar sección de vehículo
       if (trimmedLine.includes('Marca:') || trimmedLine.includes('Modelo:')) {
         inVehicleSection = true;
         inChargesSection = false;
       }
       
-      // Detectar sección de cargos
       if (trimmedLine.includes('CARGOS DescripciónAñoMonto')) {
         inVehicleSection = false;
         inChargesSection = true;
         continue;
       }
       
-      // Detectar SUBTOTAL
       if (trimmedLine.includes('SUBTOTAL')) {
         subtotal = trimmedLine;
         continue;
       }
       
-      // Detectar TOTAL A PAGAR (prioridad principal)
       if (trimmedLine.match(/TOTAL\s*A\s*PAGAR/i) || 
           trimmedLine.match(/TOTAL\s+.*PAGAR/i) ||
           trimmedLine.match(/PAGO\s*TOTAL/i)) {
@@ -152,7 +148,6 @@ async function runAutomation(placa) {
         continue;
       }
       
-      // Detectar TOTAL MONTO CARGOS como fallback
       if (trimmedLine.includes('TOTAL MONTO CARGOS:')) {
         if (!totalAPagar) {
           totalAPagar = trimmedLine;
@@ -161,7 +156,6 @@ async function runAutomation(placa) {
         continue;
       }
       
-      // Detectar cualquier línea que empiece con TOTAL (fallback adicional)
       if (trimmedLine.startsWith('TOTAL') && !totalAPagar && 
           !trimmedLine.includes('MONTO CARGOS') && 
           trimmedLine.match(/[\d,]+\.?\d*$/)) {
@@ -170,23 +164,19 @@ async function runAutomation(placa) {
         continue;
       }
       
-      // Detectar fin de sección de vehículo
       if (inVehicleSection && trimmedLine.includes('Este vehículo')) {
         inVehicleSection = false;
       }
       
-      // Agregar información del vehículo
       if (inVehicleSection && trimmedLine) {
         vehicleInfo.push(trimmedLine);
       }
       
-      // Agregar cargos
       if (inChargesSection && trimmedLine && trimmedLine.match(/\d{4}\$/)) {
         charges.push(trimmedLine);
       }
     }
     
-    // Si no encontramos TOTAL A PAGAR, buscar en todo el contenido con regex
     if (!totalAPagar) {
       const totalAPagarRegex = /TOTAL\s*A\s*PAGAR[^$\n]*\$?\s*[\d,]+\.?\d*/gi;
       const totalAPagarMatch = pageContent.match(totalAPagarRegex);
@@ -195,12 +185,10 @@ async function runAutomation(placa) {
       }
     }
     
-    // Si aún no encontramos, buscar cualquier TOTAL con monto
     if (!totalAPagar) {
       const totalRegex = /TOTAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi;
       const totalMatches = pageContent.match(totalRegex);
       if (totalMatches && totalMatches.length > 0) {
-        // Priorizar TOTAL que no sea MONTO CARGOS
         const filteredTotals = totalMatches.filter(t => !t.includes('MONTO CARGOS'));
         totalAPagar = filteredTotals.length > 0 ? filteredTotals[0].trim() : totalMatches[0].trim();
       }
@@ -364,11 +352,5 @@ app.post('/consulta', async (req, res) => {
 app.listen(port, () => {
   console.log(`🚀 API de consulta vehicular iniciada`);
   console.log(`📡 Puerto: ${port}`);
-  console.log(`🔗 URL base: http://localhost:${port}`);
   console.log(`🌐 Proxy: ${PROXY_CONFIG.server}`);
-  console.log(`📧 Email: ${EMAIL}`);
-  console.log(`✅ Endpoints disponibles:`);
-  console.log(`   GET  /consulta?placa=ABC123`);
-  console.log(`   POST /consulta`);
-  console.log(`   GET  /health`);
 });
