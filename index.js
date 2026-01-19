@@ -26,6 +26,7 @@ const PROXY_CONFIG = {
 
 const EMAIL = process.env.EMAIL || 'hdhdhd78@gmail.com';
 
+// Variable para controlar solicitudes simultáneas
 let isProcessing = false;
 let requestQueue = 0;
 
@@ -94,13 +95,114 @@ async function runAutomation(placa) {
     await page.getByRole('button', { name: 'Ver estado de cuenta' }).click();
     await delay(WAIT_TIMES.xxlong);
     
-    // Obtener todo el contenido HTML de la página
-    const htmlContent = await page.content();
+    // Extraer datos limpios
+    const pageContent = await page.textContent('body');
+    const lines = pageContent.split('\n').map(line => line.trim()).filter(line => {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) return false;
+      const exclusionPatterns = [
+        'Selecciona el metodo de pago:',
+        'Tarjeta de Crédito/Débito',
+        'Línea de Referencia Bancaria',
+        'Te redireccionaremos',
+        'Favor de tener habilitados',
+        'Cerrar',
+        'get_ip',
+        'CDATA',
+        '$(\'#modalCargar\')',
+        '//<![CDATA[',
+        '//]]>',
+        'function get_ip'
+      ];
+      return !exclusionPatterns.some(pattern => trimmedLine.includes(pattern));
+    });
     
-    // Analizar directamente el HTML
-    const resultados = await analyzeHTMLDirectly(htmlContent, placa);
+    // Procesar información del vehículo
+    let vehicleInfo = [];
+    let charges = [];
+    let totalAPagar = '';
+    let subtotal = '';
     
-    return resultados;
+    // Encontrar información del vehículo
+    const vehicleKeywords = ['Marca:', 'Modelo:', 'Linea:', 'Tipo:', 'Color:', 'NIV:'];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // Capturar información del vehículo
+      if (line.includes('Marca:')) {
+        vehicleInfo.push('Marca:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('Modelo:')) {
+        vehicleInfo.push('Modelo:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('Linea:')) {
+        vehicleInfo.push('Linea:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('Tipo:')) {
+        vehicleInfo.push('Tipo:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('Color:')) {
+        vehicleInfo.push('Color:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      } else if (line.includes('NIV:')) {
+        vehicleInfo.push('NIV:');
+        if (i + 1 < lines.length && lines[i + 1].trim() && !lines[i + 1].includes(':')) {
+          vehicleInfo.push(lines[i + 1]);
+        }
+      }
+      
+      // Capturar cargos
+      if (line.match(/\d{4}\s+\$/)) {
+        charges.push(line);
+      }
+      
+      // Capturar subtotal
+      if (line.includes('SUBTOTAL') && !subtotal) {
+        subtotal = line;
+      }
+      
+      // Capturar total a pagar
+      if ((line.includes('TOTAL A PAGAR') || line.match(/TOTAL.*PAGAR/i)) && !totalAPagar) {
+        totalAPagar = line;
+      }
+    }
+    
+    // Si no encontramos total a pagar, buscar patrones alternativos
+    if (!totalAPagar) {
+      for (const line of lines) {
+        if (line.match(/PAGO\s*TOTAL/i) || line.match(/TOTAL.*\$\d/)) {
+          totalAPagar = line;
+          break;
+        }
+      }
+    }
+    
+    // Si aún no hay total, buscar en el contenido completo
+    if (!totalAPagar) {
+      const totalMatch = pageContent.match(/TOTAL\s*A\s*PAGAR[^$\n]*\$?\s*[\d,]+\.?\d*/gi);
+      if (totalMatch && totalMatch.length > 0) {
+        totalAPagar = totalMatch[0].trim();
+      }
+    }
+    
+    return {
+      placa,
+      vehiculo: vehicleInfo.filter(line => line && line.trim()),
+      cargos: charges.length > 0 ? charges : ['No se encontraron cargos'],
+      subtotal: subtotal || 'SUBTOTAL: No disponible',
+      totalAPagar: totalAPagar || 'TOTAL A PAGAR: No disponible'
+    };
     
   } catch (error) {
     console.error('Error durante la automatización:', error.message);
@@ -108,317 +210,6 @@ async function runAutomation(placa) {
   } finally {
     await browser.close();
   }
-}
-
-async function analyzeHTMLDirectly(htmlContent, placa) {
-  console.log('=== ANÁLISIS DIRECTO DEL HTML ===');
-  
-  // Limpiar el HTML y extraer texto
-  const cleanHtml = htmlContent.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-                              .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-                              .replace(/<!--.*?-->/gs, '')
-                              .replace(/\s+/g, ' ');
-  
-  // Extraer información del vehículo
-  const vehicleInfo = extractVehicleInfo(cleanHtml);
-  
-  // Verificar si hay adeudos
-  const tieneAdeudos = cleanHtml.includes('adeudos pendientes') || 
-                       cleanHtml.includes('adeudos') ||
-                       cleanHtml.includes('REFRENDO PTE') ||
-                       cleanHtml.includes('DONATIVOS');
-  
-  // Extraer datos financieros
-  const { cargos, subsidios, totales } = extractFinancialData(cleanHtml);
-  
-  return {
-    placa,
-    vehiculo: vehicleInfo,
-    tieneAdeudos,
-    cargos,
-    subsidios,
-    totales,
-    rawHtmlLength: htmlContent.length,
-    extractedAt: new Date().toISOString()
-  };
-}
-
-function extractVehicleInfo(html) {
-  console.log('Extrayendo información del vehículo...');
-  
-  const vehicleInfo = {};
-  
-  // Buscar patrones específicos para cada campo
-  const patterns = {
-    marca: /Marca:\s*[^>]*>([^<]+)/i,
-    modelo: /Modelo:\s*[^>]*>([^<]+)/i,
-    linea: /Linea:\s*[^>]*>([^<]+)/i,
-    tipo: /Tipo:\s*[^>]*>([^<]+)/i,
-    color: /Color:\s*[^>]*>([^<]+)/i,
-    niv: /NIV:\s*[^>]*>([^<]+)/i
-  };
-  
-  for (const [key, pattern] of Object.entries(patterns)) {
-    const match = html.match(pattern);
-    if (match && match[1]) {
-      let value = match[1].trim();
-      
-      // Limpiar el valor
-      value = value.replace(/\\n/g, '')
-                   .replace(/\s+/g, ' ')
-                   .trim();
-      
-      if (value && value !== '************13110') {
-        vehicleInfo[key] = value;
-        console.log(`${key}: ${value}`);
-      }
-    }
-  }
-  
-  // Si no encontramos información, buscar de otra manera
-  if (Object.keys(vehicleInfo).length === 0) {
-    console.log('Buscando información del vehículo con método alternativo...');
-    
-    // Buscar todas las ocurrencias de texto que contengan información del vehículo
-    const vehicleTextMatch = html.match(/Marca:[^<]+Modelo:[^<]+Linea:[^<]+Tipo:[^<]+Color:[^<]+NIV:[^<]+/i);
-    if (vehicleTextMatch) {
-      const vehicleText = vehicleTextMatch[0];
-      
-      const marcaMatch = vehicleText.match(/Marca:\s*([^<]+)/i);
-      if (marcaMatch) vehicleInfo.marca = marcaMatch[1].trim();
-      
-      const modeloMatch = vehicleText.match(/Modelo:\s*([^<]+)/i);
-      if (modeloMatch) vehicleInfo.modelo = modeloMatch[1].trim();
-      
-      const lineaMatch = vehicleText.match(/Linea:\s*([^<]+)/i);
-      if (lineaMatch) vehicleInfo.linea = lineaMatch[1].trim();
-      
-      const tipoMatch = vehicleText.match(/Tipo:\s*([^<]+)/i);
-      if (tipoMatch) vehicleInfo.tipo = tipoMatch[1].trim();
-      
-      const colorMatch = vehicleText.match(/Color:\s*([^<]+)/i);
-      if (colorMatch) vehicleInfo.color = colorMatch[1].trim();
-      
-      const nivMatch = vehicleText.match(/NIV:\s*([^<]+)/i);
-      if (nivMatch) vehicleInfo.niv = nivMatch[1].trim();
-    }
-  }
-  
-  return vehicleInfo;
-}
-
-function extractFinancialData(html) {
-  console.log('Extrayendo datos financieros...');
-  
-  const financialData = {
-    cargos: [],
-    subsidios: [],
-    totales: {}
-  };
-  
-  // Buscar la sección de CARGOS
-  const cargosSectionMatch = html.match(/CARGOS[^>]*>([\s\S]*?)SUBSIDIO/si);
-  if (cargosSectionMatch) {
-    const cargosSection = cargosSectionMatch[1];
-    extractCargosFromSection(cargosSection, financialData.cargos);
-  }
-  
-  // Buscar la sección de SUBSIDIO
-  const subsidioSectionMatch = html.match(/SUBSIDIO[^>]*>([\s\S]*?)TOTAL A PAGAR/si) || 
-                               html.match(/SUBSIDIO[^>]*>([\s\S]*?)SUBTOTAL MONTO SUBSIDIO/si);
-  if (subsidioSectionMatch) {
-    const subsidioSection = subsidioSectionMatch[1];
-    extractSubsidiosFromSection(subsidioSection, financialData.subsidios);
-  }
-  
-  // Extraer totales
-  extractTotals(html, financialData.totales);
-  
-  // Si no encontramos cargos en secciones, buscar directamente en todo el HTML
-  if (financialData.cargos.length === 0) {
-    console.log('Buscando cargos directamente en el HTML...');
-    extractCargosDirectly(html, financialData.cargos);
-  }
-  
-  if (financialData.subsidios.length === 0) {
-    console.log('Buscando subsidios directamente en el HTML...');
-    extractSubsidiosDirectly(html, financialData.subsidios);
-  }
-  
-  return financialData;
-}
-
-function extractCargosFromSection(section, cargosArray) {
-  // Buscar filas de tabla con datos de cargos
-  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let match;
-  
-  while ((match = rowRegex.exec(section)) !== null) {
-    const row = match[1];
-    
-    // Extraer celdas
-    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-    const cells = [];
-    let cellMatch;
-    
-    while ((cellMatch = cellRegex.exec(row)) !== null) {
-      cells.push(cellMatch[1]);
-    }
-    
-    if (cells.length >= 3) {
-      const descripcion = cleanText(cells[0]);
-      const anio = cleanText(cells[1]);
-      const monto = cleanText(cells[2]);
-      
-      // Validar que sea un cargo válido
-      if (descripcion && descripcion.length > 2 && anio && monto && monto.includes('$')) {
-        cargosArray.push({
-          descripcion: descripcion.replace(/\\n/g, '').trim(),
-          anio: anio.replace(/\\n/g, '').trim(),
-          monto: extractAmount(monto)
-        });
-      }
-    }
-  }
-}
-
-function extractSubsidiosFromSection(section, subsidiosArray) {
-  // Buscar filas de tabla con datos de subsidios
-  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let match;
-  
-  while ((match = rowRegex.exec(section)) !== null) {
-    const row = match[1];
-    
-    // Extraer celdas
-    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-    const cells = [];
-    let cellMatch;
-    
-    while ((cellMatch = cellRegex.exec(row)) !== null) {
-      cells.push(cellMatch[1]);
-    }
-    
-    if (cells.length >= 3) {
-      const descripcion = cleanText(cells[0]);
-      const anio = cleanText(cells[1]);
-      const monto = cleanText(cells[2]);
-      
-      // Validar que sea un subsidio válido (con monto negativo)
-      if (descripcion && descripcion.length > 2 && anio && monto && (monto.includes('-$') || monto.includes('-'))) {
-        subsidiosArray.push({
-          descripcion: descripcion.replace(/\\n/g, '').trim(),
-          anio: anio.replace(/\\n/g, '').trim(),
-          monto: extractAmount(monto)
-        });
-      }
-    }
-  }
-}
-
-function extractCargosDirectly(html, cargosArray) {
-  // Buscar patrones como "REFRENDO PTE.AÑO2026$3,960.00"
-  const cargoPattern = /([A-Z\s\.ÑÁÉÍÓÚ]+?)(\d{4})(\$\s*[\d,]+\.\d{2})/g;
-  let match;
-  
-  while ((match = cargoPattern.exec(html)) !== null) {
-    const descripcion = match[1].trim();
-    const anio = match[2];
-    const monto = match[3];
-    
-    // Filtrar descripciones demasiado cortas o que sean títulos
-    if (descripcion.length > 5 && !descripcion.includes('Descripción') && !descripcion.includes('Año')) {
-      cargosArray.push({
-        descripcion,
-        anio,
-        monto
-      });
-    }
-  }
-  
-  // También buscar en formato "Descripción | Año | Monto"
-  const cargoPattern2 = /([^|]+)\|([^|]+)\|([^|]+)/g;
-  const matches2 = html.matchAll(cargoPattern2);
-  
-  for (const match of matches2) {
-    const descripcion = match[1].trim();
-    const anio = match[2].trim();
-    const monto = match[3].trim();
-    
-    if (descripcion && anio && monto && monto.includes('$') && 
-        !descripcion.includes('Descripción') && descripcion.length > 3) {
-      cargosArray.push({
-        descripcion,
-        anio,
-        monto
-      });
-    }
-  }
-}
-
-function extractSubsidiosDirectly(html, subsidiosArray) {
-  // Buscar patrones de subsidios (montos negativos)
-  const subsidioPattern = /([A-Z\s\.ÑÁÉÍÓÚ]+?)(\d{4})(-\$\s*[\d,]+\.\d{2})/g;
-  let match;
-  
-  while ((match = subsidioPattern.exec(html)) !== null) {
-    const descripcion = match[1].trim();
-    const anio = match[2];
-    const monto = match[3];
-    
-    if (descripcion.length > 5 && descripcion.toLowerCase().includes('subsidio')) {
-      subsidiosArray.push({
-        descripcion,
-        anio,
-        monto
-      });
-    }
-  }
-}
-
-function extractTotals(html, totales) {
-  // Buscar subtotal de cargos
-  const subtotalCargosMatch = html.match(/SUBTOTAL MONTO CARGOS:\s*[^>]*>([^<]+)/i);
-  if (subtotalCargosMatch) {
-    totales.subtotalCargos = extractAmount(subtotalCargosMatch[1]);
-  }
-  
-  // Buscar subtotal de subsidio
-  const subtotalSubsidioMatch = html.match(/SUBTOTAL MONTO SUBSIDIO:\s*[^>]*>([^<]+)/i);
-  if (subtotalSubsidioMatch) {
-    totales.subtotalSubsidio = extractAmount(subtotalSubsidioMatch[1]);
-  }
-  
-  // Buscar total a pagar
-  const totalAPagarMatch = html.match(/TOTAL A PAGAR:\s*[^>]*>([^<]+)/i);
-  if (totalAPagarMatch) {
-    totales.totalAPagar = extractAmount(totalAPagarMatch[1]);
-  }
-  
-  // Si no encontramos con ese patrón, buscar de otra manera
-  if (!totales.totalAPagar) {
-    const totalMatch = html.match(/\$[\d,]+\.\d{2}(?=[^>]*<\/strong>)/);
-    if (totalMatch) {
-      totales.totalAPagar = totalMatch[0];
-    }
-  }
-}
-
-function cleanText(html) {
-  return html.replace(/<[^>]*>/g, '')
-             .replace(/\\n/g, '')
-             .replace(/\s+/g, ' ')
-             .trim();
-}
-
-function extractAmount(text) {
-  if (!text) return '';
-  
-  // Buscar patrones de dinero
-  const amountPattern = /\$[\d,]+\.\d{2}|-\$[\d,]+\.\d{2}/;
-  const match = text.match(amountPattern);
-  
-  return match ? match[0] : '';
 }
 
 // Middleware para verificar solicitudes simultáneas
@@ -445,7 +236,7 @@ function checkSimultaneousRequests(req, res, next) {
 // Endpoints de la API
 app.get('/', (req, res) => {
   res.json({
-    message: 'API de consulta de estado de cuenta vehicular - ANÁLISIS DIRECTO',
+    message: 'API de consulta de estado de cuenta vehicular',
     status: 'online',
     proxy: 'activado',
     solicitudes_simultaneas: '1 máximo',
@@ -454,7 +245,18 @@ app.get('/', (req, res) => {
     endpoints: {
       consulta: 'GET /consulta?placa=ABC123',
       consultaPost: 'POST /consulta con JSON body { "placa": "ABC123" }',
-      health: 'GET /health'
+      health: 'GET /health',
+      consola: 'GET /consulta-consola/:placa'
+    },
+    ejemplo: {
+      url: '/consulta?placa=ABC123',
+      respuesta: {
+        placa: "ABC123",
+        vehiculo: ["Marca:", "TOYOTA", "Modelo:", "2025", "Linea:", "SIENNA HÍBRIDO", "Tipo:", "XLE, MINI VAN, SISTE", "Color:", "GRIS", "NIV:", "************45180"],
+        cargos: ["No se encontraron cargos"],
+        subtotal: "SUBTOTAL MONTO SUBSIDIO: -$198.00",
+        totalAPagar: "TOTAL A PAGAR: $3,802.00"
+      }
     }
   });
 });
@@ -466,8 +268,7 @@ app.get('/health', (req, res) => {
     proxy: 'configurado',
     procesando: isProcessing,
     cola: requestQueue,
-    service: 'consulta-vehicular-api',
-    version: '4.0 - Análisis directo HTML'
+    service: 'consulta-vehicular-api'
   });
 });
 
@@ -494,8 +295,8 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
     }
     
     const startTime = Date.now();
-    console.log(`\n🚀 INICIANDO CONSULTA PARA PLACA: ${placaLimpia}`);
-    console.log(`🔗 Usando proxy: ${PROXY_CONFIG.server}`);
+    console.log(`\nIniciando consulta para placa: ${placaLimpia}`);
+    console.log(`Usando proxy: ${PROXY_CONFIG.server}`);
     
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -506,22 +307,16 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
       consultadoEn: new Date().toISOString()
     };
     
-    console.log(`✅ Consulta completada en ${tiempo} segundos`);
-    console.log(`📊 Resultados:`);
-    console.log(`   • Vehículo: ${Object.keys(resultados.vehiculo).length > 0 ? 'Sí' : 'No'}`);
-    console.log(`   • Cargos: ${resultados.cargos.length}`);
-    console.log(`   • Subsidios: ${resultados.subsidios.length}`);
-    console.log(`   • Total a pagar: ${resultados.totales.totalAPagar || 'No disponible'}`);
+    console.log(`Consulta completada en ${tiempo} segundos`);
     
     res.json(respuesta);
     
   } catch (error) {
-    console.error('❌ Error en la consulta:', error);
+    console.error('Error en la consulta:', error);
     res.status(500).json({
       error: 'Error en la consulta',
       message: error.message,
-      detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta',
-      solucion: 'Intente nuevamente en 30 segundos'
+      detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
     });
   } finally {
     isProcessing = false;
@@ -553,7 +348,8 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
     }
     
     const startTime = Date.now();
-    console.log(`\n🚀 INICIANDO CONSULTA PARA PLACA: ${placaLimpia}`);
+    console.log(`\nIniciando consulta para placa: ${placaLimpia}`);
+    console.log(`Usando proxy: ${PROXY_CONFIG.server}`);
     
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -564,15 +360,16 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
       consultadoEn: new Date().toISOString()
     };
     
-    console.log(`✅ Consulta completada en ${tiempo} segundos`);
+    console.log(`Consulta completada en ${tiempo} segundos`);
     
     res.json(respuesta);
     
   } catch (error) {
-    console.error('❌ Error en la consulta:', error);
+    console.error('Error en la consulta:', error);
     res.status(500).json({
       error: 'Error en la consulta',
-      message: error.message
+      message: error.message,
+      detalles: 'Verifique: 1. Conexión a internet, 2. Proxy disponible, 3. Placa correcta'
     });
   } finally {
     isProcessing = false;
@@ -581,74 +378,148 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
   }
 });
 
-// Endpoint para debug
-app.get('/debug/:placa', checkSimultaneousRequests, async (req, res) => {
+// Endpoint para formato de consola (similar al script original)
+app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) => {
   try {
     const { placa } = req.params;
     
     if (!placa) {
       isProcessing = false;
       requestQueue--;
-      return res.status(400).json({
-        error: 'Placa requerida. Ejemplo: /debug/ABC123'
-      });
+      return res.status(400).send('Error: Placa requerida\n');
     }
     
     const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
+    const startTime = Date.now();
     
-    const browser = await chromium.launch({ 
-      headless: true,
-      proxy: PROXY_CONFIG
-    });
+    console.log(`\nIniciando consulta para placa: ${placaLimpia}`);
+    console.log(`Usando proxy: ${PROXY_CONFIG.server}`);
     
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      proxy: PROXY_CONFIG
-    });
+    const resultados = await runAutomation(placaLimpia);
+    const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
     
-    const page = await context.newPage();
+    // Formatear respuesta como en la consola
+    let respuesta = '';
+    respuesta += '\n' + '='.repeat(50) + '\n';
+    respuesta += `RESULTADOS PARA PLACA: ${resultados.placa}\n`;
+    respuesta += '='.repeat(50) + '\n';
     
-    try {
-      await page.goto('https://icvnl.gob.mx:1080/estadoctav3/edoctaconsulta#no-back-button', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
-      });
-      
-      // Realizar el proceso completo
-      await delay(WAIT_TIMES.medium);
-      await page.getByRole('checkbox', { name: 'Acepto bajo protesta de decir' }).check();
-      await delay(WAIT_TIMES.short);
-      await page.getByRole('textbox', { name: 'Placa' }).click();
-      await page.getByRole('textbox', { name: 'Placa' }).fill(placaLimpia);
-      await delay(WAIT_TIMES.short);
-      await page.locator('div:nth-child(4)').click();
-      await delay(WAIT_TIMES.long);
-      await page.getByRole('button', { name: 'Consultar' }).click();
-      await delay(WAIT_TIMES.xlong);
-      
-      // Obtener HTML
-      const htmlContent = await page.content();
-      
-      res.json({
-        placa: placaLimpia,
-        htmlLength: htmlContent.length,
-        htmlPreview: htmlContent.substring(0, 5000) + '...',
-        tieneAdeudosText: htmlContent.includes('adeudos pendientes') ? 'Sí' : 'No',
-        tieneCargosText: htmlContent.includes('CARGOS') ? 'Sí' : 'No',
-        tieneSubsidioText: htmlContent.includes('SUBSIDIO') ? 'Sí' : 'No'
-      });
-      
-    } finally {
-      await browser.close();
+    respuesta += '\nINFORMACION DEL VEHICULO:\n';
+    respuesta += '-'.repeat(30) + '\n';
+    
+    // Formatear la información del vehículo
+    let currentKey = '';
+    for (let i = 0; i < resultados.vehiculo.length; i++) {
+      const item = resultados.vehiculo[i];
+      if (item.endsWith(':')) {
+        currentKey = item;
+        respuesta += currentKey + '\n';
+      } else if (currentKey && i > 0 && resultados.vehiculo[i - 1].endsWith(':')) {
+        respuesta += item + '\n';
+      } else {
+        respuesta += item + '\n';
+      }
     }
     
+    respuesta += '\nCARGOS:\n';
+    respuesta += '-'.repeat(30) + '\n';
+    if (resultados.cargos && resultados.cargos.length > 0) {
+      if (resultados.cargos[0] === 'No se encontraron cargos') {
+        respuesta += 'No se encontraron cargos\n';
+      } else {
+        resultados.cargos.forEach((cargo, index) => {
+          respuesta += `${index + 1}. ${cargo}\n`;
+        });
+      }
+    } else {
+      respuesta += 'No se encontraron cargos\n';
+    }
+    
+    respuesta += '\nRESUMEN:\n';
+    respuesta += '-'.repeat(30) + '\n';
+    respuesta += `SUBTOTAL: ${resultados.subtotal}\n`;
+    respuesta += `TOTAL A PAGAR: ${resultados.totalAPagar}\n`;
+    respuesta += `\nTiempo de consulta: ${tiempo} segundos\n`;
+    
+    res.set('Content-Type', 'text/plain');
+    res.send(respuesta);
+    
   } catch (error) {
-    console.error('Error en debug:', error);
-    res.status(500).json({
-      error: 'Error en debug',
-      message: error.message
-    });
+    console.error('Error en la consulta:', error);
+    res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\nDetalle del error: ${error.message}\n`);
+  } finally {
+    isProcessing = false;
+    requestQueue--;
+    console.log(`🔄 Sistema liberado. Estado: disponible`);
+  }
+});
+
+// Endpoint para formato HTML
+app.get('/consulta-html/:placa', checkSimultaneousRequests, async (req, res) => {
+  try {
+    const { placa } = req.params;
+    
+    if (!placa) {
+      isProcessing = false;
+      requestQueue--;
+      return res.status(400).send('<h1>Error: Placa requerida</h1>');
+    }
+    
+    const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
+    const resultados = await runAutomation(placaLimpia);
+    
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Consulta Vehicular - ${resultados.placa}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 20px; }
+          .header { background: #f0f0f0; padding: 15px; border-radius: 5px; }
+          .section { margin: 20px 0; }
+          .title { font-weight: bold; color: #333; }
+          .content { background: #f9f9f9; padding: 15px; border-radius: 5px; }
+          .cargo { margin: 5px 0; }
+          .total { font-weight: bold; color: #d9534f; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>Resultados para placa: ${resultados.placa}</h1>
+          <p>Consultado el: ${new Date().toLocaleString()}</p>
+        </div>
+        
+        <div class="section">
+          <h2 class="title">Información del Vehículo</h2>
+          <div class="content">
+            ${resultados.vehiculo.map(item => `<p>${item}</p>`).join('')}
+          </div>
+        </div>
+        
+        <div class="section">
+          <h2 class="title">Cargos</h2>
+          <div class="content">
+            ${resultados.cargos.map((cargo, index) => `<div class="cargo">${index + 1}. ${cargo}</div>`).join('')}
+          </div>
+        </div>
+        
+        <div class="section">
+          <h2 class="title">Resumen</h2>
+          <div class="content">
+            <p><strong>${resultados.subtotal}</strong></p>
+            <p class="total">${resultados.totalAPagar}</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+    
+    res.set('Content-Type', 'text/html');
+    res.send(html);
+    
+  } catch (error) {
+    res.status(500).send('<h1>Error en la consulta</h1><p>Verifique la placa e intente nuevamente.</p>');
   } finally {
     isProcessing = false;
     requestQueue--;
@@ -656,20 +527,16 @@ app.get('/debug/:placa', checkSimultaneousRequests, async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`🚀 API DE CONSULTA VEHICULAR - ANÁLISIS DIRECTO HTML`);
+  console.log(`🚀 API de consulta vehicular iniciada`);
   console.log(`📡 Puerto: ${port}`);
   console.log(`🌐 Proxy: ${PROXY_CONFIG.server}`);
   console.log(`📧 Email: ${EMAIL}`);
   console.log(`🚫 Solicitudes simultáneas: 1 máximo`);
-  console.log(`\n✅ ENDPOINTS DISPONIBLES:`);
+  console.log(`✅ Endpoints disponibles:`);
   console.log(`   GET  /consulta?placa=ABC123`);
   console.log(`   POST /consulta`);
-  console.log(`   GET  /debug/ABC123 (para diagnóstico)`);
+  console.log(`   GET  /consulta-consola/ABC123`);
+  console.log(`   GET  /consulta-html/ABC123`);
   console.log(`   GET  /health`);
   console.log(`   GET  /`);
-  console.log(`\n🔍 SISTEMA DE ANÁLISIS DIRECTO:`);
-  console.log(`   • Regex directo sobre HTML`);
-  console.log(`   • No dependencia de selectores específicos`);
-  console.log(`   • Búsqueda de patrones en texto crudo`);
-  console.log(`   • Múltiples métodos de extracción`);
-});
+}); 
