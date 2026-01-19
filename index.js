@@ -1,3 +1,86 @@
+const { chromium } = require('playwright');
+const express = require('express');
+const cors = require('cors');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.use(cors());
+app.use(express.json());
+
+// Configuración de tiempos optimizados (milisegundos)
+const WAIT_TIMES = {
+  short: 300,
+  medium: 800,
+  long: 1100,
+  xlong: 1800,
+  xxlong: 2000
+};
+
+// Configuración del proxy desde variables de entorno
+const PROXY_CONFIG = {
+  server: process.env.PROXY_SERVER || 'http://rko4yuebgb.cn.fxdx.in:17313',
+  username: process.env.PROXY_USERNAME || '1Q2W3E4R5T6B',
+  password: process.env.PROXY_PASSWORD || '1LEREGAZA89re89'
+};
+
+const EMAIL = process.env.EMAIL || 'hdhdhd78@gmail.com';
+
+// Variable para controlar solicitudes simultáneas
+let isProcessing = false;
+let requestQueue = 0;
+
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function runAutomation(placa) {
+  const browser = await chromium.launch({ 
+    headless: true,
+    proxy: PROXY_CONFIG,
+    args: [
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-setuid-sandbox',
+      '--no-sandbox',
+      '--disable-accelerated-2d-canvas',
+      '--disable-web-security',
+      '--disable-features=site-per-process',
+      `--proxy-server=${PROXY_CONFIG.server}`
+    ]
+  });
+  
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    proxy: PROXY_CONFIG
+  });
+  
+  const page = await context.newPage();
+  
+  try {
+    console.log(`Conectando con proxy: ${PROXY_CONFIG.server}...`);
+    
+    await page.goto('https://icvnl.gob.mx:1080/estadoctav3/edoctaconsulta#no-back-button', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+    await delay(WAIT_TIMES.medium);
+    
+    await page.getByRole('checkbox', { name: 'Acepto bajo protesta de decir' }).check();
+    await delay(WAIT_TIMES.short);
+    
+    await page.getByRole('textbox', { name: 'Placa' }).click();
+    await page.getByRole('textbox', { name: 'Placa' }).fill(placa);
+    await delay(WAIT_TIMES.short);
+    
+    await page.locator('div:nth-child(4)').click();
+    await delay(WAIT_TIMES.long);
+    
+    await page.getByRole('button', { name: 'Consultar' }).click();
+    await delay(WAIT_TIMES.xlong);
+    
+    try {
+      await page.waitForSelector('input[name="robot"], input[type="checkbox"]', { 
+        timeout: 8000
       });
       await page.getByRole('checkbox', { name: 'No soy un robot' }).check();
       await delay(WAIT_TIMES.long);
