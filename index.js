@@ -98,8 +98,8 @@ async function runAutomation(placa) {
     // Obtener todo el contenido HTML de la página
     const htmlContent = await page.content();
     
-    // Extraer datos de manera robusta usando múltiples métodos
-    const resultados = await extractAllData(page, htmlContent, placa);
+    // Extraer datos de manera robusta con desglose detallado
+    const resultados = await extractAllDataWithBreakdown(page, htmlContent, placa);
     
     return resultados;
     
@@ -111,27 +111,25 @@ async function runAutomation(placa) {
   }
 }
 
-async function extractAllData(page, htmlContent, placa) {
-  // Método 1: Extraer de elementos específicos usando selectores CSS
+async function extractAllDataWithBreakdown(page, htmlContent, placa) {
+  // Extraer información del vehículo
   const vehicleInfo = await extractVehicleInfo(page);
-  const allCharges = await extractChargesWithMultipleMethods(page, htmlContent);
   
-  // Método 2: Buscar patrones en todo el contenido HTML
-  const patterns = extractWithPatterns(htmlContent);
+  // Extraer TODOS los datos financieros con desglose detallado
+  const financialData = await extractCompleteFinancialData(page, htmlContent);
   
-  // Método 3: Extraer tablas si existen
-  const tableData = await extractTableData(page);
-  
-  // Combinar todos los resultados
-  const combinedResults = combineResults(
-    vehicleInfo,
-    allCharges,
-    patterns,
-    tableData,
-    placa
-  );
-  
-  return combinedResults;
+  return {
+    placa,
+    vehiculo: vehicleInfo.length > 0 ? vehicleInfo : ['No se encontró información del vehículo'],
+    desgloseCompleto: financialData,
+    resumen: {
+      subtotal: financialData.subtotal?.monto || 'No disponible',
+      descuentos: financialData.descuentos?.total || 'No disponible',
+      impuestos: financialData.impuestos?.total || 'No disponible',
+      totalAPagar: financialData.total?.monto || 'No disponible',
+      totalDetectado: financialData.calculos?.totalCalculado || 'No disponible'
+    }
+  };
 }
 
 async function extractVehicleInfo(page) {
@@ -139,56 +137,44 @@ async function extractVehicleInfo(page) {
   
   // Selectores específicos para información del vehículo
   const vehicleSelectors = [
-    { label: 'Marca:', selector: '[class*="marca"], [id*="marca"], :text("Marca:") + *' },
-    { label: 'Modelo:', selector: '[class*="modelo"], [id*="modelo"], :text("Modelo:") + *' },
-    { label: 'Linea:', selector: '[class*="linea"], [id*="linea"], :text("Linea:") + *' },
-    { label: 'Tipo:', selector: '[class*="tipo"], [id*="tipo"], :text("Tipo:") + *' },
-    { label: 'Color:', selector: '[class*="color"], [id*="color"], :text("Color:") + *' },
-    { label: 'NIV:', selector: '[class*="niv"], [id*="niv"], :text("NIV:") + *' }
+    { label: 'Marca:', selector: '[class*="marca"], [id*="marca"], :text("Marca:")' },
+    { label: 'Modelo:', selector: '[class*="modelo"], [id*="modelo"], :text("Modelo:")' },
+    { label: 'Linea:', selector: '[class*="linea"], [id*="linea"], :text("Linea:")' },
+    { label: 'Tipo:', selector: '[class*="tipo"], [id*="tipo"], :text("Tipo:")' },
+    { label: 'Color:', selector: '[class*="color"], [id*="color"], :text("Color:")' },
+    { label: 'NIV:', selector: '[class*="niv"], [id*="niv"], :text("NIV:")' }
   ];
   
   for (const item of vehicleSelectors) {
     try {
-      // Intentar múltiples métodos de extracción
-      let value = '';
-      
-      // Método 1: Buscar elemento después del texto
-      const labelElement = await page.locator(`:text("${item.label}")`).first();
+      // Buscar por texto
+      const labelElement = await page.locator(`text=${item.label}`).first();
       if (await labelElement.count() > 0) {
-        const nextElement = await labelElement.locator('xpath=following-sibling::*[1]');
-        if (await nextElement.count() > 0) {
-          value = (await nextElement.textContent()).trim();
-        } else {
-          // Si no hay elemento hermano, buscar en el mismo elemento
-          const parentText = await labelElement.textContent();
-          const match = parentText.match(new RegExp(`${item.label}\\s*(.*)`));
-          if (match && match[1]) {
-            value = match[1].trim();
-          }
-        }
-      }
-      
-      // Método 2: Buscar por selectores CSS
-      if (!value) {
-        for (const sel of item.selector.split(', ')) {
-          try {
-            const element = await page.locator(sel).first();
-            if (await element.count() > 0) {
-              const text = (await element.textContent()).trim();
-              if (text && !text.includes(item.label)) {
-                value = text;
-                break;
-              }
+        // Obtener el texto completo y extraer el valor
+        const parentText = await labelElement.evaluate(el => {
+          let text = '';
+          let currentNode = el.parentElement;
+          
+          // Buscar en el contenedor padre
+          if (currentNode) {
+            text = currentNode.textContent || '';
+            // Limpiar el texto
+            text = text.replace(/\s+/g, ' ').trim();
+            
+            // Extraer el valor después de la etiqueta
+            const regex = new RegExp(`${item.label}\\s*(.*?)(?=\\s*[A-Z]+:|$)`);
+            const match = text.match(regex);
+            if (match && match[1]) {
+              return match[1].trim();
             }
-          } catch (e) {
-            // Continuar con el siguiente selector
           }
+          return '';
+        });
+        
+        if (parentText) {
+          vehicleInfo.push(item.label);
+          vehicleInfo.push(parentText);
         }
-      }
-      
-      if (value) {
-        vehicleInfo.push(item.label);
-        vehicleInfo.push(value);
       }
     } catch (error) {
       console.log(`No se pudo extraer ${item.label}:`, error.message);
@@ -198,285 +184,343 @@ async function extractVehicleInfo(page) {
   return vehicleInfo;
 }
 
-async function extractChargesWithMultipleMethods(page, htmlContent) {
-  const charges = [];
-  
-  // Método 1: Buscar elementos que contengan signos de dinero
-  const moneyElements = await page.locator(':text("$"), :text("MXN"), :text("pesos")').all();
-  for (const element of moneyElements) {
-    try {
-      const text = await element.textContent();
-      if (text && text.includes('$')) {
-        const cleanText = text.replace(/\s+/g, ' ').trim();
-        if (cleanText.length < 100) { // Evitar textos muy largos
-          charges.push(cleanText);
-        }
-      }
-    } catch (e) {
-      // Continuar
-    }
-  }
-  
-  // Método 2: Buscar patrones específicos en HTML
-  const chargePatterns = [
-    /\d{4}\s+\$[\d,]+\.?\d*/g,  // Año seguido de monto
-    /\$\s*[\d,]+\.?\d*/g,       // Signo $ seguido de número
-    /Monto:\s*\$?[\d,]+\.?\d*/gi,
-    /Importe:\s*\$?[\d,]+\.?\d*/gi,
-    /Cargo.*?\$[\d,]+\.?\d*/gi,
-    /Pago.*?\$[\d,]+\.?\d*/gi,
-    /[\d,]+\.?\d*\s*(?:MXN|USD|pesos)/gi
-  ];
-  
-  for (const pattern of chargePatterns) {
-    const matches = htmlContent.match(pattern);
-    if (matches) {
-      matches.forEach(match => {
-        const cleanMatch = match.replace(/<\/?[^>]+(>|$)/g, '').trim();
-        if (cleanMatch && !charges.includes(cleanMatch)) {
-          charges.push(cleanMatch);
-        }
-      });
-    }
-  }
-  
-  // Método 3: Buscar en tablas
-  const tableCharges = await extractTableCharges(page);
-  tableCharges.forEach(charge => {
-    if (!charges.includes(charge)) {
-      charges.push(charge);
-    }
-  });
-  
-  // Eliminar duplicados y ordenar
-  const uniqueCharges = [...new Set(charges)]
-    .filter(charge => charge && charge.trim() !== '')
-    .sort();
-  
-  return uniqueCharges;
-}
-
-async function extractTableCharges(page) {
-  const tableCharges = [];
-  
-  try {
-    // Buscar todas las tablas
-    const tables = await page.locator('table').all();
+async function extractCompleteFinancialData(page, htmlContent) {
+  const financialData = {
+    // Cargos por año con desglose detallado
+    cargosPorAnio: [],
     
-    for (const table of tables) {
+    // Multas y recargos
+    multas: [],
+    recargos: [],
+    
+    // Derechos e impuestos
+    derechos: [],
+    impuestos: [],
+    
+    // Subsidios y descuentos
+    subsidios: [],
+    descuentos: [],
+    
+    // Totales
+    subtotal: null,
+    total: null,
+    
+    // Cálculos
+    calculos: {
+      sumaCargos: 0,
+      sumaMultas: 0,
+      sumaRecargos: 0,
+      sumaDerechos: 0,
+      sumaImpuestos: 0,
+      sumaDescuentos: 0,
+      totalCalculado: 0
+    }
+  };
+  
+  // Extraer todas las tablas de la página
+  const tables = await page.locator('table').all();
+  console.log(`Encontradas ${tables.length} tablas`);
+  
+  // Procesar cada tabla
+  for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
+    try {
+      const table = tables[tableIndex];
       const rows = await table.locator('tr').all();
       
-      for (const row of rows) {
-        try {
-          const cells = await row.locator('td, th').allTextContents();
-          const rowText = cells.join(' | ').trim();
-          
-          // Buscar montos en la fila
-          if (rowText.includes('$') || rowText.match(/\d{4}\s+\$/)) {
-            tableCharges.push(rowText);
-          }
-          
-          // Extraer información específica de cada celda
-          for (const cell of cells) {
-            if (cell && (cell.includes('$') || cell.match(/\d{4}/))) {
-              tableCharges.push(cell.trim());
-            }
-          }
-        } catch (e) {
-          // Continuar con la siguiente fila
+      console.log(`Tabla ${tableIndex + 1}: ${rows.length} filas`);
+      
+      // Procesar cada fila de la tabla
+      for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+        const row = rows[rowIndex];
+        const cells = await row.locator('td, th').allTextContents();
+        const rowText = cells.join(' | ').trim();
+        
+        // Analizar el contenido de la fila
+        await analyzeRowContent(rowText, cells, financialData);
+      }
+    } catch (error) {
+      console.log(`Error procesando tabla ${tableIndex + 1}:`, error.message);
+    }
+  }
+  
+  // Buscar información adicional en todo el contenido HTML
+  await extractFromHTMLContent(htmlContent, financialData);
+  
+  // Realizar cálculos finales
+  calculateFinancialTotals(financialData);
+  
+  return financialData;
+}
+
+async function analyzeRowContent(rowText, cells, financialData) {
+  // Normalizar el texto
+  const normalizedText = rowText.toLowerCase().replace(/\s+/g, ' ');
+  
+  // Buscar patrones específicos
+  
+  // 1. Cargos por año (ej: 2024 $1,200.00)
+  const yearChargePattern = /(\d{4})\s*.*?(\$\s*[\d,]+\.?\d*)/i;
+  const yearMatch = normalizedText.match(yearChargePattern);
+  if (yearMatch) {
+    const year = yearMatch[1];
+    const monto = extractAmount(yearMatch[2]);
+    
+    // Determinar el tipo de cargo basado en palabras clave
+    let tipo = 'Cargo anual';
+    let concepto = 'Tenencia/Refrendo';
+    
+    if (normalizedText.includes('refrendo')) concepto = 'Refrendo';
+    if (normalizedText.includes('tenencia')) concepto = 'Tenencia';
+    if (normalizedText.includes('placa')) concepto = 'Placas';
+    if (normalizedText.includes('derecho')) concepto = 'Derecho';
+    if (normalizedText.includes('verific')) concepto = 'Verificación';
+    
+    financialData.cargosPorAnio.push({
+      año: year,
+      concepto: concepto,
+      tipo: tipo,
+      monto: monto,
+      descripcion: rowText.trim()
+    });
+    
+    financialData.calculos.sumaCargos += parseFloat(monto.replace(/[$,]/g, '')) || 0;
+  }
+  
+  // 2. Multas
+  if (normalizedText.includes('multa') || normalizedText.includes('infracción') || normalizedText.includes('sanción')) {
+    const amount = extractAmount(rowText);
+    if (amount) {
+      financialData.multas.push({
+        concepto: 'Multa',
+        descripcion: rowText.trim(),
+        monto: amount,
+        fecha: extractDate(rowText)
+      });
+      
+      financialData.calculos.sumaMultas += parseFloat(amount.replace(/[$,]/g, '')) || 0;
+    }
+  }
+  
+  // 3. Recargos
+  if (normalizedText.includes('recargo') || normalizedText.includes('moratorio') || normalizedText.includes('interés')) {
+    const amount = extractAmount(rowText);
+    if (amount) {
+      financialData.recargos.push({
+        concepto: 'Recargo',
+        descripcion: rowText.trim(),
+        monto: amount,
+        tipo: normalizedText.includes('interés') ? 'Interés moratorio' : 'Recargo'
+      });
+      
+      financialData.calculos.sumaRecargos += parseFloat(amount.replace(/[$,]/g, '')) || 0;
+    }
+  }
+  
+  // 4. Derechos
+  if (normalizedText.includes('derecho') && !normalizedText.includes('derechos humanos')) {
+    const amount = extractAmount(rowText);
+    if (amount) {
+      financialData.derechos.push({
+        concepto: 'Derecho',
+        descripcion: rowText.trim(),
+        monto: amount,
+        tipo: normalizedText.includes('expedición') ? 'Expedición' : 'Derecho administrativo'
+      });
+      
+      financialData.calculos.sumaDerechos += parseFloat(amount.replace(/[$,]/g, '')) || 0;
+    }
+  }
+  
+  // 5. Impuestos
+  if (normalizedText.includes('iva') || normalizedText.includes('impuesto')) {
+    const amount = extractAmount(rowText);
+    if (amount) {
+      financialData.impuestos.push({
+        concepto: 'Impuesto',
+        descripcion: rowText.trim(),
+        monto: amount,
+        tipo: normalizedText.includes('iva') ? 'IVA' : 'Impuesto'
+      });
+      
+      financialData.calculos.sumaImpuestos += parseFloat(amount.replace(/[$,]/g, '')) || 0;
+    }
+  }
+  
+  // 6. Subsidios y descuentos (montos negativos)
+  if (normalizedText.includes('subsidio') || normalizedText.includes('descuento') || 
+      normalizedText.includes('bonificación') || rowText.includes('-$')) {
+    const amount = extractAmount(rowText);
+    if (amount && (amount.includes('-$') || normalizedText.includes('descuento'))) {
+      financialData.descuentos.push({
+        concepto: normalizedText.includes('subsidio') ? 'Subsidio' : 'Descuento',
+        descripcion: rowText.trim(),
+        monto: amount,
+        tipo: 'Bonificación'
+      });
+      
+      const amountValue = parseFloat(amount.replace(/[$,]/g, '')) || 0;
+      financialData.calculos.sumaDescuentos += Math.abs(amountValue);
+    }
+  }
+  
+  // 7. Subtotal
+  if (normalizedText.includes('subtotal') && !financialData.subtotal) {
+    const amount = extractAmount(rowText);
+    if (amount) {
+      financialData.subtotal = {
+        concepto: 'Subtotal',
+        monto: amount,
+        descripcion: rowText.trim()
+      };
+    }
+  }
+  
+  // 8. Total
+  if ((normalizedText.includes('total a pagar') || normalizedText.includes('pago total') || 
+       (normalizedText.includes('total') && normalizedText.includes('pagar'))) && !financialData.total) {
+    const amount = extractAmount(rowText);
+    if (amount) {
+      financialData.total = {
+        concepto: 'Total a Pagar',
+        monto: amount,
+        descripcion: rowText.trim()
+      };
+    }
+  }
+}
+
+async function extractFromHTMLContent(htmlContent, financialData) {
+  // Buscar patrones específicos en todo el HTML
+  
+  // Dividir por líneas
+  const lines = htmlContent.split('\n');
+  
+  for (const line of lines) {
+    const cleanLine = line.replace(/<[^>]*>/g, '').trim();
+    if (!cleanLine) continue;
+    
+    const normalizedLine = cleanLine.toLowerCase();
+    
+    // Buscar montos sueltos que no se capturaron en tablas
+    const amountMatches = cleanLine.match(/(\$\s*[\d,]+\.?\d*)|([\d,]+\.?\d*\s*(?:MXN|USD|pesos))/gi);
+    
+    if (amountMatches) {
+      for (const match of amountMatches) {
+        const amount = extractAmount(match);
+        
+        // Clasificar según contexto
+        if (normalizedLine.includes('multa') && !isAlreadyAdded(financialData.multas, amount)) {
+          financialData.multas.push({
+            concepto: 'Multa',
+            descripcion: cleanLine,
+            monto: amount
+          });
+        } else if (normalizedLine.includes('recargo') && !isAlreadyAdded(financialData.recargos, amount)) {
+          financialData.recargos.push({
+            concepto: 'Recargo',
+            descripcion: cleanLine,
+            monto: amount
+          });
+        } else if (normalizedLine.includes('derecho') && !isAlreadyAdded(financialData.derechos, amount)) {
+          financialData.derechos.push({
+            concepto: 'Derecho',
+            descripcion: cleanLine,
+            monto: amount
+          });
+        } else if ((normalizedLine.includes('iva') || normalizedLine.includes('impuesto')) && 
+                  !isAlreadyAdded(financialData.impuestos, amount)) {
+          financialData.impuestos.push({
+            concepto: 'Impuesto',
+            descripcion: cleanLine,
+            monto: amount
+          });
         }
       }
     }
-  } catch (error) {
-    console.log('Error extrayendo tablas:', error.message);
   }
   
-  return tableCharges;
-}
-
-function extractWithPatterns(htmlContent) {
-  const patterns = {
-    subtotal: [],
-    total: [],
-    descuentos: [],
-    impuestos: [],
-    otros: []
-  };
-  
-  // Patrones para subtotal
-  const subtotalPatterns = [
-    /SUBTOTAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /Subtotal[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /Sub-total[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /MONTO\s*SUBSIDIO[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /SUBSIDIO[^$\n]*\$?\s*[\d,]+\.?\d*/gi
-  ];
-  
-  // Patrones para total
-  const totalPatterns = [
-    /TOTAL\s*A\s*PAGAR[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /PAGO\s*TOTAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /TOTAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /MONTO\s*TOTAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /PAGAR[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /importe\s*FINAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /FINAL[^$\n]*\$?\s*[\d,]+\.?\d*/gi
-  ];
-  
-  // Patrones para descuentos
-  const descuentoPatterns = [
-    /DESCUENTO[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /DISCOUNT[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /BONIFICACION[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /REDUCCION[^$\n]*\$?\s*[\d,]+\.?\d*/gi
-  ];
-  
-  // Patrones para impuestos
-  const impuestoPatterns = [
-    /IVA[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /IMPUESTO[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /TAX[^$\n]*\$?\s*[\d,]+\.?\d*/gi,
-    /ISR[^$\n]*\$?\s*[\d,]+\.?\d*/gi
-  ];
-  
-  // Extraer con cada patrón
-  extractPattern(subtotalPatterns, htmlContent, patterns.subtotal);
-  extractPattern(totalPatterns, htmlContent, patterns.total);
-  extractPattern(descuentoPatterns, htmlContent, patterns.descuentos);
-  extractPattern(impuestoPatterns, htmlContent, patterns.impuestos);
-  
-  // Extraer otros montos no capturados
-  const otherMoney = htmlContent.match(/\$\s*[\d,]+\.?\d*/g);
-  if (otherMoney) {
-    patterns.otros.push(...otherMoney.map(m => m.trim()));
-  }
-  
-  return patterns;
-}
-
-function extractPattern(patterns, htmlContent, resultArray) {
-  for (const pattern of patterns) {
-    const matches = htmlContent.match(pattern);
-    if (matches) {
-      matches.forEach(match => {
-        const cleanMatch = match.replace(/<\/?[^>]+(>|$)/g, '').trim();
-        if (cleanMatch && !resultArray.includes(cleanMatch)) {
-          resultArray.push(cleanMatch);
-        }
+  // Buscar años y sus montos
+  const yearPattern = /(\d{4})\s*[^$]*(\$\s*[\d,]+\.?\d*)/gi;
+  let yearMatch;
+  while ((yearMatch = yearPattern.exec(htmlContent)) !== null) {
+    const year = yearMatch[1];
+    const amount = extractAmount(yearMatch[2]);
+    
+    if (!financialData.cargosPorAnio.some(item => item.año === year && item.monto === amount)) {
+      financialData.cargosPorAnio.push({
+        año: year,
+        concepto: 'Cargo vehicular',
+        tipo: 'Anual',
+        monto: amount,
+        descripcion: `Cargo del año ${year}`
       });
     }
   }
 }
 
-async function extractTableData(page) {
-  const tableData = {
-    rows: [],
-    summary: []
-  };
+function extractAmount(text) {
+  if (!text) return '';
   
-  try {
-    // Buscar tablas de resumen o totales
-    const summaryTables = await page.locator('table:has(:text("TOTAL")), table:has(:text("SUBTOTAL")), table:has(:text("PAGAR"))').all();
-    
-    for (const table of summaryTables) {
-      const rows = await table.locator('tr').allTextContents();
-      tableData.rows.push(...rows.filter(r => r.trim()));
+  // Buscar patrones de dinero
+  const patterns = [
+    /\$\s*[\d,]+\.?\d*/,
+    /[\d,]+\.?\d*\s*(?:MXN|USD|pesos)/i,
+    /-\$\s*[\d,]+\.?\d*/,
+    /[\d,]+\.?\d*/
+  ];
+  
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return match[0].trim();
     }
-    
-    // Buscar elementos de resumen fuera de tablas
-    const summaryElements = await page.locator('div:has(:text("TOTAL")), div:has(:text("SUBTOTAL")), div:has(:text("PAGAR")), span:has(:text("TOTAL")), span:has(:text("SUBTOTAL"))').all();
-    
-    for (const element of summaryElements) {
-      const text = await element.textContent();
-      if (text && text.length < 200) { // Evitar textos muy largos
-        tableData.summary.push(text.trim());
-      }
-    }
-  } catch (error) {
-    console.log('Error extrayendo datos de tablas:', error.message);
   }
   
-  return tableData;
+  return '';
 }
 
-function combineResults(vehicleInfo, charges, patterns, tableData, placa) {
-  // Procesar subtotal - priorizar el primero encontrado
-  let subtotal = patterns.subtotal[0] || 
-                 tableData.summary.find(s => s.includes('SUBTOTAL')) ||
-                 tableData.rows.find(r => r.includes('SUBTOTAL')) ||
-                 'SUBTOTAL: No disponible';
+function extractDate(text) {
+  const datePatterns = [
+    /\d{2}\/\d{2}\/\d{4}/,
+    /\d{2}-\d{2}-\d{4}/,
+    /\d{4}-\d{2}-\d{2}/
+  ];
   
-  // Procesar total a pagar - priorizar el primero encontrado
-  let totalAPagar = patterns.total[0] ||
-                    tableData.summary.find(s => s.includes('TOTAL A PAGAR') || s.includes('PAGO TOTAL') || (s.includes('TOTAL') && s.includes('$'))) ||
-                    tableData.rows.find(r => r.includes('TOTAL A PAGAR') || r.includes('PAGO TOTAL')) ||
-                    patterns.otros.find(o => o.includes('TOTAL') || o.match(/PAGAR.*\$/i)) ||
-                    'TOTAL A PAGAR: No disponible';
-  
-  // Si el total a pagar no tiene etiqueta, agregarla
-  if (totalAPagar !== 'TOTAL A PAGAR: No disponible' && !totalAPagar.includes('TOTAL') && !totalAPagar.includes('PAGAR')) {
-    totalAPagar = `TOTAL A PAGAR: ${totalAPagar}`;
-  }
-  
-  // Filtrar cargos para eliminar duplicados de montos
-  const filteredCharges = [];
-  const seenAmounts = new Set();
-  
-  for (const charge of charges) {
-    // Extraer el monto numérico
-    const amountMatch = charge.match(/[\d,]+\.?\d*/);
-    if (amountMatch) {
-      const amount = amountMatch[0];
-      if (!seenAmounts.has(amount)) {
-        seenAmounts.add(amount);
-        filteredCharges.push(charge);
-      }
-    } else {
-      // Si no tiene monto, agregarlo igual
-      filteredCharges.push(charge);
+  for (const pattern of datePatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return match[0];
     }
   }
   
-  // Agregar descuentos e impuestos a los cargos si no están incluidos
-  if (patterns.descuentos.length > 0) {
-    patterns.descuentos.forEach(desc => {
-      if (!filteredCharges.some(c => c.includes(desc))) {
-        filteredCharges.push(desc);
-      }
-    });
-  }
+  return '';
+}
+
+function isAlreadyAdded(array, amount) {
+  return array.some(item => item.monto === amount);
+}
+
+function calculateFinancialTotals(financialData) {
+  const calc = financialData.calculos;
   
-  if (patterns.impuestos.length > 0) {
-    patterns.impuestos.forEach(imp => {
-      if (!filteredCharges.some(c => c.includes(imp))) {
-        filteredCharges.push(imp);
-      }
-    });
-  }
+  // Sumar todos los cargos positivos
+  const totalCargos = calc.sumaCargos + calc.sumaMultas + calc.sumaRecargos + 
+                     calc.sumaDerechos + calc.sumaImpuestos;
   
-  // Ordenar cargos
-  filteredCharges.sort((a, b) => {
-    // Priorizar cargos con años primero
-    const hasYearA = a.match(/\d{4}/);
-    const hasYearB = b.match(/\d{4}/);
-    if (hasYearA && !hasYearB) return -1;
-    if (!hasYearA && hasYearB) return 1;
-    return a.localeCompare(b);
-  });
+  // Restar descuentos
+  const totalFinal = totalCargos - calc.sumaDescuentos;
   
-  return {
-    placa,
-    vehiculo: vehicleInfo.length > 0 ? vehicleInfo : ['No se encontró información del vehículo'],
-    cargos: filteredCharges.length > 0 ? filteredCharges : ['No se encontraron cargos'],
-    subtotal: subtotal,
-    totalAPagar: totalAPagar,
-    informacionAdicional: {
-      descuentos: patterns.descuentos,
-      impuestos: patterns.impuestos,
-      otrasCantidades: patterns.otros.filter(o => !o.includes('TOTAL') && !o.includes('SUBTOTAL')),
-      tablasEncontradas: tableData.rows.length,
-      resumenEncontrado: tableData.summary.length
-    }
+  calc.totalCalculado = totalFinal > 0 ? `$${totalFinal.toFixed(2)}` : '$0.00';
+  
+  // Agregar resumen por categoría
+  financialData.resumenCategorias = {
+    cargosAnuales: `$${calc.sumaCargos.toFixed(2)}`,
+    multas: `$${calc.sumaMultas.toFixed(2)}`,
+    recargos: `$${calc.sumaRecargos.toFixed(2)}`,
+    derechos: `$${calc.sumaDerechos.toFixed(2)}`,
+    impuestos: `$${calc.sumaImpuestos.toFixed(2)}`,
+    descuentos: `-$${calc.sumaDescuentos.toFixed(2)}`,
+    totalCalculado: calc.totalCalculado
   };
 }
 
@@ -514,16 +558,22 @@ app.get('/', (req, res) => {
       consulta: 'GET /consulta?placa=ABC123',
       consultaPost: 'POST /consulta con JSON body { "placa": "ABC123" }',
       health: 'GET /health',
-      consola: 'GET /consulta-consola/:placa'
+      consola: 'GET /consulta-consola/:placa',
+      desglose: 'GET /desglose/:placa'
     },
     ejemplo: {
       url: '/consulta?placa=ABC123',
       respuesta: {
         placa: "ABC123",
-        vehiculo: ["Marca:", "TOYOTA", "Modelo:", "2025", "Linea:", "SIENNA HÍBRIDO", "Tipo:", "XLE, MINI VAN, SISTE", "Color:", "GRIS", "NIV:", "************45180"],
-        cargos: ["No se encontraron cargos"],
-        subtotal: "SUBTOTAL MONTO SUBSIDIO: -$198.00",
-        totalAPagar: "TOTAL A PAGAR: $3,802.00"
+        vehiculo: ["Marca:", "TOYOTA", "Modelo:", "2025", "Linea:", "SIENNA HÍBRIDO"],
+        desgloseCompleto: {
+          cargosPorAnio: [
+            { año: "2024", concepto: "Tenencia", monto: "$1,200.00" },
+            { año: "2024", concepto: "Refrendo", monto: "$800.00" }
+          ],
+          multas: [{ concepto: "Multa por exceso de velocidad", monto: "$500.00" }],
+          resumen: { totalAPagar: "$2,500.00" }
+        }
       }
     }
   });
@@ -573,16 +623,15 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
       ...resultados,
       tiempoConsulta: `${tiempo} segundos`,
       consultadoEn: new Date().toISOString(),
-      extraccion: {
-        metodosUsados: 4,
-        cargosEncontrados: resultados.cargos.length,
-        exitoso: resultados.totalAPagar !== 'TOTAL A PAGAR: No disponible'
+      estadisticas: {
+        cargosEncontrados: resultados.desgloseCompleto.cargosPorAnio?.length || 0,
+        multasEncontradas: resultados.desgloseCompleto.multas?.length || 0,
+        descuentosEncontrados: resultados.desgloseCompleto.descuentos?.length || 0
       }
     };
     
     console.log(`Consulta completada en ${tiempo} segundos`);
-    console.log(`Cargos encontrados: ${resultados.cargos.length}`);
-    console.log(`Total a pagar: ${resultados.totalAPagar}`);
+    console.log(`Desglose obtenido: ${resultados.desgloseCompleto.cargosPorAnio?.length || 0} cargos`);
     
     res.json(respuesta);
     
@@ -634,16 +683,14 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
       ...resultados,
       tiempoConsulta: `${tiempo} segundos`,
       consultadoEn: new Date().toISOString(),
-      extraccion: {
-        metodosUsados: 4,
-        cargosEncontrados: resultados.cargos.length,
-        exitoso: resultados.totalAPagar !== 'TOTAL A PAGAR: No disponible'
+      estadisticas: {
+        cargosEncontrados: resultados.desgloseCompleto.cargosPorAnio?.length || 0,
+        multasEncontradas: resultados.desgloseCompleto.multas?.length || 0,
+        descuentosEncontrados: resultados.desgloseCompleto.descuentos?.length || 0
       }
     };
     
     console.log(`Consulta completada en ${tiempo} segundos`);
-    console.log(`Cargos encontrados: ${resultados.cargos.length}`);
-    console.log(`Total a pagar: ${resultados.totalAPagar}`);
     
     res.json(respuesta);
     
@@ -662,7 +709,61 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
   }
 });
 
-// Endpoint para formato de consola (similar al script original)
+// Nuevo endpoint para desglose detallado
+app.get('/desglose/:placa', checkSimultaneousRequests, async (req, res) => {
+  try {
+    const { placa } = req.params;
+    
+    if (!placa) {
+      isProcessing = false;
+      requestQueue--;
+      return res.status(400).json({
+        error: 'Placa requerida. Ejemplo: /desglose/ABC123'
+      });
+    }
+    
+    const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
+    const startTime = Date.now();
+    
+    console.log(`\nIniciando desglose detallado para placa: ${placaLimpia}`);
+    
+    const resultados = await runAutomation(placaLimpia);
+    const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
+    
+    // Formatear respuesta para desglose
+    const respuesta = {
+      placa: resultados.placa,
+      vehiculo: formatVehicleInfo(resultados.vehiculo),
+      desgloseDetallado: {
+        cargosPorAnio: resultados.desgloseCompleto.cargosPorAnio || [],
+        multas: resultados.desgloseCompleto.multas || [],
+        recargos: resultados.desgloseCompleto.recargos || [],
+        derechos: resultados.desgloseCompleto.derechos || [],
+        impuestos: resultados.desgloseCompleto.impuestos || [],
+        subsidios: resultados.desgloseCompleto.subsidios || [],
+        descuentos: resultados.desgloseCompleto.descuentos || []
+      },
+      resumenFinanciero: resultados.desgloseCompleto.resumenCategorias || {},
+      totales: resultados.resumen,
+      tiempoConsulta: `${tiempo} segundos`,
+      consultadoEn: new Date().toISOString()
+    };
+    
+    res.json(respuesta);
+    
+  } catch (error) {
+    console.error('Error en el desglose:', error);
+    res.status(500).json({
+      error: 'Error en el desglose',
+      message: error.message
+    });
+  } finally {
+    isProcessing = false;
+    requestQueue--;
+  }
+});
+
+// Endpoint para formato de consola con desglose
 app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) => {
   try {
     const { placa } = req.params;
@@ -677,75 +778,102 @@ app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) 
     const startTime = Date.now();
     
     console.log(`\nIniciando consulta para placa: ${placaLimpia}`);
-    console.log(`Usando proxy: ${PROXY_CONFIG.server}`);
     
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
     
-    // Formatear respuesta como en la consola
+    // Formatear respuesta para consola
     let respuesta = '';
-    respuesta += '\n' + '='.repeat(60) + '\n';
-    respuesta += `RESULTADOS PARA PLACA: ${resultados.placa}\n`;
-    respuesta += '='.repeat(60) + '\n';
+    respuesta += '\n' + '='.repeat(70) + '\n';
+    respuesta += `DESGLOSE COMPLETO PARA PLACA: ${resultados.placa}\n`;
+    respuesta += '='.repeat(70) + '\n';
     
-    respuesta += '\nINFORMACION DEL VEHICULO:\n';
+    respuesta += '\nINFORMACIÓN DEL VEHÍCULO:\n';
     respuesta += '-'.repeat(40) + '\n';
     
-    // Formatear la información del vehículo
-    let currentKey = '';
-    for (let i = 0; i < resultados.vehiculo.length; i++) {
-      const item = resultados.vehiculo[i];
-      if (item.endsWith(':')) {
-        currentKey = item;
-        respuesta += currentKey.padEnd(12);
-      } else if (currentKey && i > 0 && resultados.vehiculo[i - 1].endsWith(':')) {
-        respuesta += item + '\n';
-      } else {
-        respuesta += item + '\n';
+    // Formatear información del vehículo
+    for (let i = 0; i < resultados.vehiculo.length; i += 2) {
+      if (resultados.vehiculo[i] && resultados.vehiculo[i + 1]) {
+        respuesta += `${resultados.vehiculo[i].padEnd(10)} ${resultados.vehiculo[i + 1]}\n`;
       }
     }
     
-    respuesta += '\nCARGOS ENCONTRADOS:\n';
+    const desglose = resultados.desgloseCompleto;
+    
+    // Cargos por año
+    if (desglose.cargosPorAnio && desglose.cargosPorAnio.length > 0) {
+      respuesta += '\nCARGOS POR AÑO:\n';
+      respuesta += '-'.repeat(40) + '\n';
+      desglose.cargosPorAnio.forEach((cargo, index) => {
+        respuesta += `${(index + 1).toString().padStart(2)}. ${cargo.año} - ${cargo.concepto.padEnd(20)} ${cargo.monto.padStart(12)}\n`;
+        if (cargo.descripcion && cargo.descripcion.length > 30) {
+          respuesta += `    ${cargo.descripcion.substring(0, 60)}...\n`;
+        }
+      });
+    }
+    
+    // Multas
+    if (desglose.multas && desglose.multas.length > 0) {
+      respuesta += '\nMULTAS:\n';
+      respuesta += '-'.repeat(40) + '\n';
+      desglose.multas.forEach((multa, index) => {
+        respuesta += `${(index + 1).toString().padStart(2)}. ${multa.concepto.padEnd(25)} ${multa.monto.padStart(12)}\n`;
+        if (multa.descripcion) {
+          respuesta += `    ${multa.descripcion.substring(0, 50)}\n`;
+        }
+      });
+    }
+    
+    // Recargos
+    if (desglose.recargos && desglose.recargos.length > 0) {
+      respuesta += '\nRECARGOS E INTERESES:\n';
+      respuesta += '-'.repeat(40) + '\n';
+      desglose.recargos.forEach((recargo, index) => {
+        respuesta += `${(index + 1).toString().padStart(2)}. ${recargo.tipo?.padEnd(25) || 'Recargo'} ${recargo.monto.padStart(12)}\n`;
+      });
+    }
+    
+    // Descuentos
+    if (desglose.descuentos && desglose.descuentos.length > 0) {
+      respuesta += '\nDESCUENTOS Y SUBSIDIOS:\n';
+      respuesta += '-'.repeat(40) + '\n';
+      desglose.descuentos.forEach((descuento, index) => {
+        respuesta += `${(index + 1).toString().padStart(2)}. ${descuento.concepto.padEnd(25)} ${descuento.monto.padStart(12)}\n`;
+      });
+    }
+    
+    // Resumen financiero
+    respuesta += '\n' + '='.repeat(70) + '\n';
+    respuesta += 'RESUMEN FINANCIERO\n';
+    respuesta += '='.repeat(70) + '\n';
+    
+    if (desglose.resumenCategorias) {
+      const resumen = desglose.resumenCategorias;
+      respuesta += `Cargos anuales:    ${resumen.cargosAnuales?.padStart(15) || '$0.00'.padStart(15)}\n`;
+      respuesta += `Multas:            ${resumen.multas?.padStart(15) || '$0.00'.padStart(15)}\n`;
+      respuesta += `Recargos:          ${resumen.recargos?.padStart(15) || '$0.00'.padStart(15)}\n`;
+      respuesta += `Derechos:          ${resumen.derechos?.padStart(15) || '$0.00'.padStart(15)}\n`;
+      respuesta += `Impuestos:         ${resumen.impuestos?.padStart(15) || '$0.00'.padStart(15)}\n`;
+      respuesta += `Descuentos:        ${resumen.descuentos?.padStart(15) || '$0.00'.padStart(15)}\n`;
+      respuesta += '-'.repeat(40) + '\n';
+      respuesta += `TOTAL CALCULADO:   ${resumen.totalCalculado?.padStart(15) || '$0.00'.padStart(15)}\n`;
+    }
+    
+    respuesta += '\nTOTALES ENCONTRADOS:\n';
     respuesta += '-'.repeat(40) + '\n';
-    if (resultados.cargos && resultados.cargos.length > 0) {
-      resultados.cargos.forEach((cargo, index) => {
-        respuesta += `${(index + 1).toString().padStart(3)}. ${cargo}\n`;
-      });
-    } else {
-      respuesta += 'No se encontraron cargos\n';
-    }
-    
-    respuesta += '\nRESUMEN FINANCIERO:\n';
-    respuesta += '-'.repeat(40) + '\n';
-    respuesta += `${resultados.subtotal}\n`;
-    respuesta += `${resultados.totalAPagar}\n`;
-    
-    if (resultados.informacionAdicional.descuentos.length > 0) {
-      respuesta += '\nDESCUENTOS APLICADOS:\n';
-      respuesta += '-'.repeat(30) + '\n';
-      resultados.informacionAdicional.descuentos.forEach(desc => {
-        respuesta += `• ${desc}\n`;
-      });
-    }
-    
-    if (resultados.informacionAdicional.impuestos.length > 0) {
-      respuesta += '\nIMPUESTOS:\n';
-      respuesta += '-'.repeat(30) + '\n';
-      resultados.informacionAdicional.impuestos.forEach(imp => {
-        respuesta += `• ${imp}\n`;
-      });
-    }
+    respuesta += `Subtotal:          ${resultados.resumen.subtotal?.padStart(15) || 'No disponible'.padStart(15)}\n`;
+    respuesta += `Total a pagar:     ${resultados.resumen.totalAPagar?.padStart(15) || 'No disponible'.padStart(15)}\n`;
     
     respuesta += `\n⏱️  Tiempo de consulta: ${tiempo} segundos\n`;
-    respuesta += `📊 Cargos encontrados: ${resultados.cargos.length}\n`;
-    respuesta += `✅ Extracción: ${resultados.extraccion.exitoso ? 'EXITOSA' : 'PARCIAL'}\n`;
+    respuesta += `📊 Cargos analizados: ${desglose.cargosPorAnio?.length || 0}\n`;
+    respuesta += `✅ Proceso completado\n`;
     
     res.set('Content-Type', 'text/plain');
     res.send(respuesta);
     
   } catch (error) {
     console.error('Error en la consulta:', error);
-    res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\n\nDetalle del error: ${error.message}\n`);
+    res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\n\nDetalle: ${error.message}\n`);
   } finally {
     isProcessing = false;
     requestQueue--;
@@ -753,378 +881,15 @@ app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) 
   }
 });
 
-// Endpoint para formato HTML
-app.get('/consulta-html/:placa', checkSimultaneousRequests, async (req, res) => {
-  try {
-    const { placa } = req.params;
-    
-    if (!placa) {
-      isProcessing = false;
-      requestQueue--;
-      return res.status(400).send('<h1>Error: Placa requerida</h1>');
-    }
-    
-    const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
-    const resultados = await runAutomation(placaLimpia);
-    
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Consulta Vehicular - ${resultados.placa}</title>
-        <style>
-          body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            margin: 20px; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-          }
-          .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-          }
-          .header { 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-          }
-          .header h1 { 
-            margin: 0; 
-            font-size: 2.5em; 
-            font-weight: 300;
-          }
-          .header p { 
-            margin: 10px 0 0; 
-            opacity: 0.9;
-            font-size: 1.1em;
-          }
-          .section { 
-            margin: 30px; 
-            padding: 25px;
-            background: #f8f9fa;
-            border-radius: 10px;
-            border-left: 5px solid #667eea;
-          }
-          .section-title { 
-            font-weight: bold; 
-            color: #333; 
-            font-size: 1.4em;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-          }
-          .section-title:before {
-            content: "▶";
-            margin-right: 10px;
-            color: #667eea;
-          }
-          .content { 
-            background: white; 
-            padding: 20px; 
-            border-radius: 8px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
-          }
-          .vehicle-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 15px;
-          }
-          .vehicle-item {
-            background: #f0f4ff;
-            padding: 15px;
-            border-radius: 8px;
-            border: 1px solid #e0e6ff;
-          }
-          .vehicle-label {
-            font-weight: bold;
-            color: #667eea;
-            margin-bottom: 5px;
-            font-size: 0.9em;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-          }
-          .vehicle-value {
-            font-size: 1.1em;
-            color: #333;
-          }
-          .cargo-item { 
-            margin: 12px 0; 
-            padding: 12px;
-            background: linear-gradient(to right, #f8f9ff, #ffffff);
-            border-left: 4px solid #4CAF50;
-            border-radius: 6px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            transition: transform 0.2s;
-          }
-          .cargo-item:hover {
-            transform: translateX(5px);
-            background: linear-gradient(to right, #f0f4ff, #ffffff);
-          }
-          .cargo-number {
-            background: #667eea;
-            color: white;
-            width: 30px;
-            height: 30px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 0.9em;
-          }
-          .cargo-text {
-            flex-grow: 1;
-            margin-left: 15px;
-            color: #333;
-          }
-          .cargo-amount {
-            font-weight: bold;
-            color: #2E7D32;
-            font-size: 1.1em;
-            background: #e8f5e9;
-            padding: 5px 15px;
-            border-radius: 20px;
-            min-width: 120px;
-            text-align: center;
-          }
-          .summary { 
-            background: linear-gradient(135deg, #2c3e50 0%, #4CA1AF 100%);
-            color: white;
-            padding: 30px;
-            border-radius: 10px;
-            margin: 30px;
-          }
-          .summary-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin: 15px 0;
-            padding: 15px;
-            background: rgba(255,255,255,0.1);
-            border-radius: 8px;
-          }
-          .summary-label {
-            font-size: 1.1em;
-            opacity: 0.9;
-          }
-          .summary-value {
-            font-size: 1.8em;
-            font-weight: bold;
-            color: #4CAF50;
-          }
-          .total-value {
-            font-size: 2.2em;
-            color: #FFEB3B;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
-          }
-          .footer {
-            text-align: center;
-            padding: 20px;
-            color: #666;
-            font-size: 0.9em;
-            border-top: 1px solid #eee;
-          }
-          .stats {
-            display: flex;
-            justify-content: space-around;
-            margin-top: 20px;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 10px;
-          }
-          .stat-item {
-            text-align: center;
-          }
-          .stat-value {
-            font-size: 1.8em;
-            font-weight: bold;
-            color: #667eea;
-          }
-          .stat-label {
-            font-size: 0.9em;
-            color: #666;
-            margin-top: 5px;
-          }
-          @media (max-width: 768px) {
-            .vehicle-grid { grid-template-columns: 1fr; }
-            .stats { flex-direction: column; gap: 15px; }
-            .section { margin: 15px; padding: 15px; }
-            .summary { margin: 15px; padding: 20px; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Consulta Vehicular</h1>
-            <p>Resultados para placa: <strong>${resultados.placa}</strong> | Consultado el: ${new Date().toLocaleString()}</p>
-          </div>
-          
-          <div class="section">
-            <div class="section-title">📋 Información del Vehículo</div>
-            <div class="content">
-              <div class="vehicle-grid">
-                ${formatVehicleInfoHTML(resultados.vehiculo)}
-              </div>
-            </div>
-          </div>
-          
-          <div class="section">
-            <div class="section-title">💰 Cargos y Conceptos</div>
-            <div class="content">
-              ${formatChargesHTML(resultados.cargos)}
-            </div>
-          </div>
-          
-          <div class="summary">
-            <div class="summary-item">
-              <div class="summary-label">SUBTOTAL</div>
-              <div class="summary-value">${extractAmountHTML(resultados.subtotal)}</div>
-            </div>
-            <div class="summary-item">
-              <div class="summary-label">TOTAL A PAGAR</div>
-              <div class="summary-value total-value">${extractAmountHTML(resultados.totalAPagar)}</div>
-            </div>
-          </div>
-          
-          ${formatAdditionalInfoHTML(resultados.informacionAdicional)}
-          
-          <div class="stats">
-            <div class="stat-item">
-              <div class="stat-value">${resultados.cargos.length}</div>
-              <div class="stat-label">Cargos Encontrados</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value">${resultados.extraccion.metodosUsados}</div>
-              <div class="stat-label">Métodos de Extracción</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value">${resultados.extraccion.exitoso ? '✅' : '⚠️'}</div>
-              <div class="stat-label">Estado</div>
-            </div>
-          </div>
-          
-          <div class="footer">
-            <p>Consulta realizada mediante API automatizada | Sistema de extracción robusta</p>
-            <p>Tiempo de consulta: ${resultados.tiempoConsulta} | Fecha: ${new Date(resultados.consultadoEn).toLocaleDateString()}</p>
-          </div>
-        </div>
-        
-        <script>
-          // Resaltar montos en cargos
-          document.querySelectorAll('.cargo-text').forEach(el => {
-            const text = el.textContent;
-            const amountMatch = text.match(/\\$[\\d,]+(?:\\.\\d+)?/);
-            if (amountMatch) {
-              el.innerHTML = text.replace(amountMatch[0], '<strong style="color: #2E7D32;">' + amountMatch[0] + '</strong>');
-            }
-          });
-        </script>
-      </body>
-      </html>
-    `;
-    
-    res.set('Content-Type', 'text/html');
-    res.send(html);
-    
-  } catch (error) {
-    res.status(500).send('<h1>Error en la consulta</h1><p>Verifique la placa e intente nuevamente.</p>');
-  } finally {
-    isProcessing = false;
-    requestQueue--;
-  }
-});
-
-// Funciones auxiliares para formato HTML
-function formatVehicleInfoHTML(vehicleInfo) {
-  let html = '';
-  let currentLabel = '';
-  
-  for (let i = 0; i < vehicleInfo.length; i++) {
-    const item = vehicleInfo[i];
-    if (item.endsWith(':')) {
-      currentLabel = item.replace(':', '');
-    } else if (currentLabel) {
-      html += `
-        <div class="vehicle-item">
-          <div class="vehicle-label">${currentLabel}</div>
-          <div class="vehicle-value">${item}</div>
-        </div>
-      `;
-      currentLabel = '';
+function formatVehicleInfo(vehicleArray) {
+  const vehicleObj = {};
+  for (let i = 0; i < vehicleArray.length; i += 2) {
+    if (vehicleArray[i] && vehicleArray[i + 1]) {
+      const key = vehicleArray[i].replace(':', '').trim().toLowerCase();
+      vehicleObj[key] = vehicleArray[i + 1];
     }
   }
-  
-  return html;
-}
-
-function formatChargesHTML(charges) {
-  if (charges.length === 0 || (charges.length === 1 && charges[0] === 'No se encontraron cargos')) {
-    return '<p style="text-align: center; color: #666; padding: 20px;">No se encontraron cargos registrados</p>';
-  }
-  
-  let html = '';
-  charges.forEach((cargo, index) => {
-    const amountMatch = cargo.match(/\$[\d,]+(?:\.\d+)?/);
-    const amount = amountMatch ? amountMatch[0] : '';
-    const description = amount ? cargo.replace(amount, '').trim() : cargo;
-    
-    html += `
-      <div class="cargo-item">
-        <div class="cargo-number">${index + 1}</div>
-        <div class="cargo-text">${description}</div>
-        ${amount ? `<div class="cargo-amount">${amount}</div>` : ''}
-      </div>
-    `;
-  });
-  
-  return html;
-}
-
-function extractAmountHTML(text) {
-  const amountMatch = text.match(/\$[\d,]+(?:\.\d+)?/);
-  if (amountMatch) {
-    return amountMatch[0];
-  }
-  return text;
-}
-
-function formatAdditionalInfoHTML(info) {
-  let html = '';
-  
-  if (info.descuentos.length > 0 || info.impuestos.length > 0) {
-    html += '<div class="section"><div class="section-title">📊 Detalles Adicionales</div><div class="content">';
-    
-    if (info.descuentos.length > 0) {
-      html += '<h4>Descuentos Aplicados:</h4><ul>';
-      info.descuentos.forEach(desc => {
-        html += `<li>${desc}</li>`;
-      });
-      html += '</ul>';
-    }
-    
-    if (info.impuestos.length > 0) {
-      html += '<h4>Impuestos:</h4><ul>';
-      info.impuestos.forEach(imp => {
-        html += `<li>${imp}</li>`;
-      });
-      html += '</ul>';
-    }
-    
-    html += '</div></div>';
-  }
-  
-  return html;
+  return vehicleObj;
 }
 
 app.listen(port, () => {
@@ -1133,16 +898,17 @@ app.listen(port, () => {
   console.log(`🌐 Proxy: ${PROXY_CONFIG.server}`);
   console.log(`📧 Email: ${EMAIL}`);
   console.log(`🚫 Solicitudes simultáneas: 1 máximo`);
-  console.log(`✅ Endpoints disponibles:`);
+  console.log(`\n✅ Endpoints disponibles:`);
   console.log(`   GET  /consulta?placa=ABC123`);
   console.log(`   POST /consulta`);
+  console.log(`   GET  /desglose/ABC123          (NUEVO - Desglose detallado)`);
   console.log(`   GET  /consulta-consola/ABC123`);
-  console.log(`   GET  /consulta-html/ABC123`);
   console.log(`   GET  /health`);
   console.log(`   GET  /`);
-  console.log(`\n🔍 Sistema de extracción mejorado:`);
-  console.log(`   • 4 métodos de extracción simultáneos`);
-  console.log(`   • Búsqueda por patrones avanzados`);
-  console.log(`   • Análisis de tablas HTML`);
-  console.log(`   • Detección de montos con múltiples formatos`);
+  console.log(`\n🔍 Sistema de desglose mejorado:`);
+  console.log(`   • Categorización automática de cargos`);
+  console.log(`   • Separación por año y concepto`);
+  console.log(`   • Identificación de multas y recargos`);
+  console.log(`   • Detección de descuentos e impuestos`);
+  console.log(`   • Cálculo automático de totales`);
 });
