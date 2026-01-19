@@ -98,11 +98,8 @@ async function runAutomation(placa) {
     // Obtener todo el contenido HTML de la página
     const htmlContent = await page.content();
     
-    // Guardar HTML para debug (opcional)
-    // require('fs').writeFileSync(`debug_${placa}.html`, htmlContent);
-    
-    // Extraer datos de manera FORZADA
-    const resultados = await extractAllDataForcibly(page, htmlContent, placa);
+    // Extraer datos estructurados de manera específica
+    const resultados = await extractStructuredData(page, htmlContent, placa);
     
     return resultados;
     
@@ -114,488 +111,303 @@ async function runAutomation(placa) {
   }
 }
 
-async function extractAllDataForcibly(page, htmlContent, placa) {
-  console.log('=== INICIANDO EXTRACCIÓN FORZADA DE DATOS ===');
+async function extractStructuredData(page, htmlContent, placa) {
+  console.log('=== EXTRACCIÓN ESTRUCTURADA DE DATOS ===');
   
-  // Extraer información del vehículo de manera forzada
-  const vehicleInfo = await extractVehicleInfoForcibly(page);
+  // Extraer información limpia del vehículo
+  const vehicleInfo = await extractCleanVehicleInfo(page);
   
-  // Extraer TODOS los datos financieros de manera forzada
-  const financialData = await extractFinancialDataForcibly(page, htmlContent);
+  // Extraer cargos y subsidios estructurados
+  const financialData = await extractStructuredFinancialData(page, htmlContent);
   
-  // Extraer texto completo de la página para análisis
-  const allText = await extractAllTextForcibly(page);
+  // Determinar si tiene adeudos
+  const tieneAdeudos = await page.locator('text=Este vehículo cuenta con adeudos pendientes').count() > 0;
   
-  // Procesar texto para encontrar montos y datos
-  const processedData = processAllText(allText);
-  
-  // Combinar todos los datos
-  const finalData = {
+  return {
     placa,
-    vehiculo: vehicleInfo.length > 0 ? vehicleInfo : extractVehicleFromText(allText),
-    desgloseCompleto: mergeFinancialData(financialData, processedData),
-    textoCompleto: allText.substring(0, 5000) + '...', // Primeros 5000 caracteres para debug
-    resumen: generateSummary(mergeFinancialData(financialData, processedData))
+    vehiculo: vehicleInfo,
+    tieneAdeudos,
+    cargos: financialData.cargos,
+    subsidios: financialData.subsidios,
+    totales: financialData.totales
   };
-  
-  console.log('=== EXTRACCIÓN COMPLETADA ===');
-  console.log('Datos del vehículo encontrados:', vehicleInfo.length);
-  console.log('Montos encontrados:', processedData.allAmounts.length);
-  
-  return finalData;
 }
 
-async function extractVehicleInfoForcibly(page) {
-  const vehicleInfo = [];
+async function extractCleanVehicleInfo(page) {
+  console.log('Extrayendo información del vehículo...');
+  
+  const vehicleInfo = {};
   
   try {
-    // Método 1: Buscar por todos los elementos que puedan contener info del vehículo
-    const possibleElements = await page.locator('div, span, td, th, p, li, strong, b').all();
+    // Buscar el contenedor principal de información del vehículo
+    const vehicleContainer = await page.locator('text=Marca:').first().locator('xpath=ancestor::div[contains(@class, "container") or contains(@class, "vehicle") or contains(@class, "info")]').first();
     
-    const vehicleKeywords = [
-      'marca', 'modelo', 'linea', 'tipo', 'color', 'niv', 
-      'año', 'serie', 'motor', 'placas', 'vehículo', 'carro',
-      'automóvil', 'propietario', 'dueño', 'tarjeta', 'circulación'
+    // Extraer cada campo específicamente
+    const fields = [
+      { key: 'marca', selector: 'text=Marca:', type: 'label' },
+      { key: 'modelo', selector: 'text=Modelo:', type: 'label' },
+      { key: 'linea', selector: 'text=Linea:', type: 'label' },
+      { key: 'tipo', selector: 'text=Tipo:', type: 'label' },
+      { key: 'color', selector: 'text=Color:', type: 'label' },
+      { key: 'niv', selector: 'text=NIV:', type: 'label' }
     ];
     
-    for (const element of possibleElements.slice(0, 100)) { // Limitar a primeros 100 elementos
+    for (const field of fields) {
       try {
-        const text = await element.textContent();
-        if (text && text.trim()) {
-          const lowerText = text.toLowerCase();
-          for (const keyword of vehicleKeywords) {
-            if (lowerText.includes(keyword)) {
-              vehicleInfo.push(text.trim());
-              break;
+        const labelElement = await page.locator(field.selector).first();
+        if (await labelElement.count() > 0) {
+          // Obtener el valor después del label
+          const value = await labelElement.evaluate((el) => {
+            // Buscar el siguiente elemento hermano que contenga texto
+            let nextElement = el.nextSibling;
+            while (nextElement && (!nextElement.textContent || nextElement.textContent.trim() === '')) {
+              nextElement = nextElement.nextSibling;
             }
+            return nextElement ? nextElement.textContent.trim() : '';
+          });
+          
+          if (value) {
+            // Limpiar el valor
+            const cleanValue = value.replace(/\s+/g, ' ').trim();
+            vehicleInfo[field.key] = cleanValue;
+            console.log(`${field.key}: ${cleanValue}`);
           }
         }
-      } catch (e) {
-        // Ignorar errores en elementos específicos
+      } catch (error) {
+        console.log(`Error extrayendo ${field.key}:`, error.message);
       }
     }
     
-    // Método 2: Buscar tablas específicas
-    const tables = await page.locator('table').all();
-    for (const table of tables) {
-      const rows = await table.locator('tr').all();
-      for (const row of rows) {
-        const cells = await row.locator('td, th').allTextContents();
-        const rowText = cells.join(' | ').trim();
-        if (rowText) {
-          vehicleInfo.push(rowText);
-        }
-      }
+    // Si no encontramos información, intentar método alternativo
+    if (Object.keys(vehicleInfo).length === 0) {
+      console.log('Usando método alternativo para extraer información del vehículo...');
+      await extractVehicleFromHTMLContent(htmlContent, vehicleInfo);
     }
     
   } catch (error) {
-    console.log('Error extrayendo info del vehículo:', error.message);
+    console.log('Error en extracción de vehículo:', error.message);
   }
   
-  return [...new Set(vehicleInfo)].slice(0, 20); // Limitar a 20 elementos únicos
+  return vehicleInfo;
 }
 
-async function extractFinancialDataForcibly(page, htmlContent) {
-  console.log('Extrayendo datos financieros...');
-  
-  const financialData = {
-    cargosPorAnio: [],
-    multas: [],
-    recargos: [],
-    derechos: [],
-    impuestos: [],
-    subsidios: [],
-    descuentos: [],
-    otrosCargos: [],
-    subtotal: null,
-    total: null,
-    calculos: {
-      sumaCargos: 0,
-      sumaMultas: 0,
-      sumaRecargos: 0,
-      sumaDerechos: 0,
-      sumaImpuestos: 0,
-      sumaDescuentos: 0,
-      sumaOtros: 0,
-      totalCalculado: 0
-    }
-  };
-  
-  // Extraer TODOS los montos del HTML
-  const amountPatterns = [
-    /\$\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?/g, // $1,234.56
-    /\$\s*\d+(?:\.\d{2})?/g, // $1234.56
-    /-\$\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?/g, // -$1,234.56
-    /\d{1,3}(?:,\d{3})*(?:\.\d{2})?\s*(?:MXN|USD|pesos)/gi,
-    /total.*?\$\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?/gi,
-    /subtotal.*?\$\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?/gi,
-    /pagar.*?\$\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?/gi
-  ];
-  
-  let allAmounts = [];
-  for (const pattern of amountPatterns) {
-    const matches = htmlContent.match(pattern) || [];
-    allAmounts = [...allAmounts, ...matches];
-  }
-  
-  // Eliminar duplicados y limpiar
-  allAmounts = [...new Set(allAmounts)].map(amount => amount.trim());
-  
-  console.log('Montos encontrados en HTML:', allAmounts.length);
-  
-  // Extraer todo el texto visible
-  const allText = await page.evaluate(() => {
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode: function(node) {
-          // Filtrar nodos vacíos y scripts/estilos
-          if (node.parentElement.tagName === 'SCRIPT' || 
-              node.parentElement.tagName === 'STYLE' ||
-              node.parentElement.tagName === 'NOSCRIPT') {
-            return NodeFilter.FILTER_REJECT;
-          }
-          if (node.textContent.trim().length > 0) {
-            return NodeFilter.FILTER_ACCEPT;
-          }
-          return NodeFilter.FILTER_REJECT;
-        }
-      }
-    );
-    
-    const texts = [];
-    let node;
-    while (node = walker.nextNode()) {
-      texts.push(node.textContent.trim());
-    }
-    return texts.join('\n');
-  });
-  
-  // Procesar el texto para encontrar datos estructurados
-  const lines = allText.split('\n').filter(line => line.trim().length > 0);
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lowerLine = line.toLowerCase();
-    
-    // Buscar años (2020, 2021, 2022, 2023, 2024, 2025)
-    const yearMatch = line.match(/(20\d{2})/);
-    if (yearMatch) {
-      const year = yearMatch[1];
-      // Buscar montos cerca del año
-      for (const amount of allAmounts) {
-        if (Math.abs(lines.indexOf(line) - i) < 3) {
-          financialData.cargosPorAnio.push({
-            año: year,
-            concepto: 'Cargo vehicular',
-            monto: amount,
-            descripcion: line
-          });
-          
-          const amountNum = parseFloat(amount.replace(/[^0-9.-]+/g, ''));
-          if (!isNaN(amountNum)) {
-            financialData.calculos.sumaCargos += Math.abs(amountNum);
-          }
-        }
-      }
-    }
-    
-    // Categorizar por palabras clave
-    if (lowerLine.includes('multa') || lowerLine.includes('infracción')) {
-      const amount = findAmountInLine(line, allAmounts);
-      if (amount) {
-        financialData.multas.push({
-          concepto: 'Multa',
-          monto: amount,
-          descripcion: line
-        });
-        
-        const amountNum = parseFloat(amount.replace(/[^0-9.-]+/g, ''));
-        if (!isNaN(amountNum)) {
-          financialData.calculos.sumaMultas += Math.abs(amountNum);
-        }
-      }
-    }
-    
-    if (lowerLine.includes('recargo') || lowerLine.includes('moratorio') || lowerLine.includes('interés')) {
-      const amount = findAmountInLine(line, allAmounts);
-      if (amount) {
-        financialData.recargos.push({
-          concepto: 'Recargo',
-          monto: amount,
-          descripcion: line
-        });
-        
-        const amountNum = parseFloat(amount.replace(/[^0-9.-]+/g, ''));
-        if (!isNaN(amountNum)) {
-          financialData.calculos.sumaRecargos += Math.abs(amountNum);
-        }
-      }
-    }
-    
-    if (lowerLine.includes('derecho')) {
-      const amount = findAmountInLine(line, allAmounts);
-      if (amount) {
-        financialData.derechos.push({
-          concepto: 'Derecho',
-          monto: amount,
-          descripcion: line
-        });
-        
-        const amountNum = parseFloat(amount.replace(/[^0-9.-]+/g, ''));
-        if (!isNaN(amountNum)) {
-          financialData.calculos.sumaDerechos += Math.abs(amountNum);
-        }
-      }
-    }
-    
-    if (lowerLine.includes('subtotal')) {
-      const amount = findAmountInLine(line, allAmounts);
-      if (amount && !financialData.subtotal) {
-        financialData.subtotal = {
-          concepto: 'Subtotal',
-          monto: amount,
-          descripcion: line
-        };
-      }
-    }
-    
-    if (lowerLine.includes('total') && (lowerLine.includes('pagar') || lowerLine.includes('final'))) {
-      const amount = findAmountInLine(line, allAmounts);
-      if (amount && !financialData.total) {
-        financialData.total = {
-          concepto: 'Total a Pagar',
-          monto: amount,
-          descripcion: line
-        };
-      }
-    }
-    
-    // Buscar cualquier monto que no haya sido categorizado
-    for (const amount of allAmounts) {
-      if (line.includes(amount.replace('$', '').trim())) {
-        // Verificar si ya fue agregado
-        const alreadyAdded = [
-          ...financialData.cargosPorAnio,
-          ...financialData.multas,
-          ...financialData.recargos,
-          ...financialData.derechos
-        ].some(item => item.monto === amount);
-        
-        if (!alreadyAdded) {
-          financialData.otrosCargos.push({
-            concepto: 'Cargo no identificado',
-            monto: amount,
-            descripcion: line
-          });
-          
-          const amountNum = parseFloat(amount.replace(/[^0-9.-]+/g, ''));
-          if (!isNaN(amountNum)) {
-            financialData.calculos.sumaOtros += Math.abs(amountNum);
-          }
-        }
-      }
-    }
-  }
-  
-  // Calcular total
-  const totalCalculado = 
-    financialData.calculos.sumaCargos +
-    financialData.calculos.sumaMultas +
-    financialData.calculos.sumaRecargos +
-    financialData.calculos.sumaDerechos +
-    financialData.calculos.sumaImpuestos +
-    financialData.calculos.sumaOtros -
-    financialData.calculos.sumaDescuentos;
-  
-  financialData.calculos.totalCalculado = totalCalculado;
-  
-  return financialData;
-}
-
-async function extractAllTextForcibly(page) {
-  try {
-    // Extraer todo el texto de la página usando múltiples métodos
-    
-    // Método 1: textContent de body
-    const bodyText = await page.evaluate(() => document.body.textContent);
-    
-    // Método 2: Todos los elementos visibles
-    const allText = await page.evaluate(() => {
-      const elements = document.querySelectorAll('body *');
-      const texts = [];
-      
-      elements.forEach(el => {
-        if (el.offsetWidth > 0 && el.offsetHeight > 0) { // Solo elementos visibles
-          const text = el.textContent;
-          if (text && text.trim()) {
-            texts.push(text.trim());
-          }
-        }
-      });
-      
-      return texts.join('\n');
-    });
-    
-    // Método 3: Usar getTextContent en toda la página
-    const pageText = await page.textContent('body');
-    
-    // Combinar todos los métodos y eliminar duplicados
-    const combinedText = [bodyText, allText, pageText]
-      .filter(text => text && text.trim())
-      .join('\n\n---\n\n');
-    
-    return combinedText;
-    
-  } catch (error) {
-    console.log('Error extrayendo texto:', error.message);
-    return '';
-  }
-}
-
-function processAllText(text) {
-  console.log('Procesando texto completo...');
-  
-  const result = {
-    allAmounts: [],
-    years: [],
-    vehicleInfo: [],
-    lines: []
-  };
-  
-  // Extraer todas las líneas de texto
-  const lines = text.split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0);
-  
-  result.lines = lines;
-  
-  // Extraer todos los montos
-  const amountRegex = /\$\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?|-\$\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d{1,3}(?:,\d{3})*(?:\.\d{2})?\s*(?:MXN|USD|pesos)/gi;
-  const matches = text.match(amountRegex) || [];
-  result.allAmounts = [...new Set(matches.map(m => m.trim()))];
-  
-  // Extraer años
-  const yearRegex = /20\d{2}/g;
-  const years = text.match(yearRegex) || [];
-  result.years = [...new Set(years)];
-  
-  // Extraer información del vehículo
-  const vehicleKeywords = ['marca', 'modelo', 'año', 'color', 'niv', 'serie', 'motor', 'placa', 'vehículo'];
-  result.vehicleInfo = lines.filter(line => {
-    const lowerLine = line.toLowerCase();
-    return vehicleKeywords.some(keyword => lowerLine.includes(keyword));
-  });
-  
-  return result;
-}
-
-function findAmountInLine(line, allAmounts) {
-  for (const amount of allAmounts) {
-    // Eliminar $ y espacios para comparación
-    const cleanAmount = amount.replace(/[$\s]/g, '');
-    const cleanLine = line.replace(/[$\s]/g, '');
-    
-    if (cleanLine.includes(cleanAmount)) {
-      return amount;
-    }
-  }
-  return null;
-}
-
-function extractVehicleFromText(text) {
-  const vehicleInfo = [];
-  const lines = text.split('\n').map(l => l.trim()).filter(l => l);
-  
-  // Patrones específicos para información del vehículo
+async function extractVehicleFromHTMLContent(htmlContent, vehicleInfo) {
+  // Extraer información del vehículo del HTML directamente
   const patterns = [
-    { regex: /marca[:\s]*([^\n]+)/i, key: 'Marca:' },
-    { regex: /modelo[:\s]*([^\n]+)/i, key: 'Modelo:' },
-    { regex: /año[:\s]*([^\n]+)/i, key: 'Año:' },
-    { regex: /color[:\s]*([^\n]+)/i, key: 'Color:' },
-    { regex: /niv[:\s]*([^\n]+)/i, key: 'NIV:' },
-    { regex: /serie[:\s]*([^\n]+)/i, key: 'Serie:' },
-    { regex: /motor[:\s]*([^\n]+)/i, key: 'Motor:' },
-    { regex: /placa[:\s]*([^\n]+)/i, key: 'Placa:' },
-    { regex: /vehículo[:\s]*([^\n]+)/i, key: 'Vehículo:' }
+    { regex: /Marca:\s*<[^>]*>([^<]+)/i, key: 'marca' },
+    { regex: /Modelo:\s*<[^>]*>([^<]+)/i, key: 'modelo' },
+    { regex: /Linea:\s*<[^>]*>([^<]+)/i, key: 'linea' },
+    { regex: /Tipo:\s*<[^>]*>([^<]+)/i, key: 'tipo' },
+    { regex: /Color:\s*<[^>]*>([^<]+)/i, key: 'color' },
+    { regex: /NIV:\s*<[^>]*>([^<]+)/i, key: 'niv' }
   ];
   
   for (const pattern of patterns) {
-    const match = text.match(pattern.regex);
+    const match = htmlContent.match(pattern.regex);
     if (match && match[1]) {
       const value = match[1].trim();
-      if (value.length > 0 && value.length < 100) { // Filtrar valores muy largos
-        vehicleInfo.push(pattern.key);
-        vehicleInfo.push(value);
+      if (value && value !== '************13110') { // Filtrar valores enmascarados
+        vehicleInfo[pattern.key] = value;
       }
     }
   }
-  
-  return vehicleInfo.length > 0 ? vehicleInfo : ['No se encontró información del vehículo'];
 }
 
-function mergeFinancialData(financialData, processedData) {
-  // Asegurarnos de que tenemos todos los montos
-  const allUniqueAmounts = [...new Set([
-    ...processedData.allAmounts,
-    ...financialData.cargosPorAnio.map(item => item.monto),
-    ...financialData.multas.map(item => item.monto),
-    ...financialData.recargos.map(item => item.monto),
-    ...financialData.derechos.map(item => item.monto),
-    ...financialData.otrosCargos.map(item => item.monto)
-  ].filter(Boolean))];
+async function extractStructuredFinancialData(page, htmlContent) {
+  console.log('Extrayendo datos financieros estructurados...');
   
-  // Si no tenemos cargos por año pero tenemos años y montos, intentar crear
-  if (financialData.cargosPorAnio.length === 0 && processedData.years.length > 0) {
-    processedData.years.forEach(year => {
-      // Buscar montos cerca de años en el texto
-      const yearIndex = processedData.lines.findIndex(line => line.includes(year));
-      if (yearIndex !== -1) {
-        // Buscar montos en líneas cercanas
-        for (let i = Math.max(0, yearIndex - 2); i < Math.min(processedData.lines.length, yearIndex + 3); i++) {
-          const line = processedData.lines[i];
-          const amount = findAmountInLine(line, allUniqueAmounts);
-          if (amount) {
-            financialData.cargosPorAnio.push({
-              año: year,
-              concepto: 'Cargo vehicular',
-              monto: amount,
-              descripcion: line
-            });
+  const financialData = {
+    cargos: [],
+    subsidios: [],
+    totales: {}
+  };
+  
+  try {
+    // Buscar la sección de CARGOS
+    const cargoSection = await page.locator('text=CARGOS').first();
+    if (await cargoSection.count() > 0) {
+      // Encontrar la tabla de cargos
+      const cargoTable = await cargoSection.locator('xpath=following::table[1]').first();
+      
+      if (await cargoTable.count() > 0) {
+        // Extraer filas de la tabla
+        const rows = await cargoTable.locator('tr').all();
+        
+        for (let i = 1; i < rows.length; i++) { // Empezar desde 1 para saltar el encabezado
+          const row = rows[i];
+          const cells = await row.locator('td').allTextContents();
+          
+          if (cells.length >= 3) {
+            const descripcion = cells[0].trim();
+            const anio = cells[1].trim();
+            const monto = cells[2].trim();
+            
+            // Validar que sea un cargo válido (no vacío y con monto)
+            if (descripcion && anio && monto && monto.includes('$')) {
+              financialData.cargos.push({
+                descripcion,
+                anio,
+                monto
+              });
+              console.log(`Cargo: ${descripcion} | ${anio} | ${monto}`);
+            }
           }
         }
       }
-    });
+    }
+    
+    // Buscar la sección de SUBSIDIO
+    const subsidioSection = await page.locator('text=SUBSIDIO').first();
+    if (await subsidioSection.count() > 0) {
+      // Encontrar la tabla de subsidios
+      const subsidioTable = await subsidioSection.locator('xpath=following::table[1]').first();
+      
+      if (await subsidioTable.count() > 0) {
+        // Extraer filas de la tabla
+        const rows = await subsidioTable.locator('tr').all();
+        
+        for (let i = 1; i < rows.length; i++) { // Empezar desde 1 para saltar el encabezado
+          const row = rows[i];
+          const cells = await row.locator('td').allTextContents();
+          
+          if (cells.length >= 3) {
+            const descripcion = cells[0].trim();
+            const anio = cells[1].trim();
+            const monto = cells[2].trim();
+            
+            // Validar que sea un subsidio válido
+            if (descripcion && anio && monto && monto.includes('$')) {
+              financialData.subsidios.push({
+                descripcion,
+                anio,
+                monto
+              });
+              console.log(`Subsidio: ${descripcion} | ${anio} | ${monto}`);
+            }
+          }
+        }
+      }
+    }
+    
+    // Extraer totales específicos
+    await extractSpecificTotals(page, financialData);
+    
+  } catch (error) {
+    console.log('Error extrayendo datos financieros:', error.message);
+    // Si falla el método de tablas, intentar extraer del texto
+    await extractFinancialDataFromText(htmlContent, financialData);
   }
   
   return financialData;
 }
 
-function generateSummary(financialData) {
-  const totalAPagar = financialData.total?.monto || 
-                     (financialData.calculos.totalCalculado > 0 ? 
-                      `$${financialData.calculos.totalCalculado.toFixed(2)}` : 
-                      'No disponible');
-  
-  return {
-    subtotal: financialData.subtotal?.monto || 'No disponible',
-    descuentos: financialData.descuentos.length > 0 ? 
-                `-$${financialData.calculos.sumaDescuentos.toFixed(2)}` : 
-                'No disponible',
-    impuestos: financialData.impuestos.length > 0 ? 
-               `$${financialData.calculos.sumaImpuestos.toFixed(2)}` : 
-               'No disponible',
-    totalAPagar: totalAPagar,
-    totalDetectado: `$${financialData.calculos.totalCalculado.toFixed(2)}`,
-    estadisticas: {
-      cargosAnuales: financialData.cargosPorAnio.length,
-      multas: financialData.multas.length,
-      recargos: financialData.recargos.length,
-      otrosCargos: financialData.otrosCargos.length,
-      montosEncontrados: financialData.calculos.totalCalculado > 0 ? 'Sí' : 'No'
+async function extractSpecificTotals(page, financialData) {
+  // Buscar subtotal de cargos
+  const subtotalCargosElement = await page.locator('text=SUBTOTAL MONTO CARGOS:').first();
+  if (await subtotalCargosElement.count() > 0) {
+    const subtotalText = await subtotalCargosElement.textContent();
+    const montoMatch = subtotalText.match(/\$\s*[\d,]+\.\d{2}/);
+    if (montoMatch) {
+      financialData.totales.subtotalCargos = montoMatch[0];
     }
-  };
+  }
+  
+  // Buscar subtotal de subsidio
+  const subtotalSubsidioElement = await page.locator('text=SUBTOTAL MONTO SUBSIDIO:').first();
+  if (await subtotalSubsidioElement.count() > 0) {
+    const subtotalText = await subtotalSubsidioElement.textContent();
+    const montoMatch = subtotalText.match(/\$\s*[\d,]+\.\d{2}/);
+    if (montoMatch) {
+      financialData.totales.subtotalSubsidio = montoMatch[0];
+    }
+  }
+  
+  // Buscar total a pagar
+  const totalAPagarElement = await page.locator('text=TOTAL A PAGAR:').first();
+  if (await totalAPagarElement.count() > 0) {
+    const totalText = await totalAPagarElement.textContent();
+    const montoMatch = totalText.match(/\$\s*[\d,]+\.\d{2}/);
+    if (montoMatch) {
+      financialData.totales.totalAPagar = montoMatch[0];
+    }
+  }
+}
+
+async function extractFinancialDataFromText(htmlContent, financialData) {
+  console.log('Extrayendo datos financieros del texto...');
+  
+  // Dividir el HTML en líneas
+  const lines = htmlContent.split('\n');
+  
+  let inCargosSection = false;
+  let inSubsidioSection = false;
+  
+  for (const line of lines) {
+    const cleanLine = line.replace(/<[^>]*>/g, '').trim();
+    
+    if (!cleanLine) continue;
+    
+    // Detectar secciones
+    if (cleanLine.includes('CARGOS') && cleanLine.includes('DescripciónAñoMonto')) {
+      inCargosSection = true;
+      inSubsidioSection = false;
+      continue;
+    }
+    
+    if (cleanLine.includes('SUBSIDIO') && cleanLine.includes('DescripciónAñoMonto')) {
+      inCargosSection = false;
+      inSubsidioSection = true;
+      continue;
+    }
+    
+    // Extraer datos de cargos
+    if (inCargosSection && !cleanLine.includes('SUBTOTAL')) {
+      // Patrón para líneas de cargo: DESCRIPCIÓN2026$3,960.00
+      const cargoMatch = cleanLine.match(/^([A-Z\s\.]+)(\d{4})(\$\s*[\d,]+\.\d{2})$/);
+      if (cargoMatch) {
+        financialData.cargos.push({
+          descripcion: cargoMatch[1].trim(),
+          anio: cargoMatch[2],
+          monto: cargoMatch[3]
+        });
+      }
+    }
+    
+    // Extraer datos de subsidios
+    if (inSubsidioSection && !cleanLine.includes('SUBTOTAL')) {
+      // Patrón para líneas de subsidio: DESCRIPCIÓN2026-$198.00
+      const subsidioMatch = cleanLine.match(/^([A-Z\s\.]+)(\d{4})(-\$\s*[\d,]+\.\d{2})$/);
+      if (subsidioMatch) {
+        financialData.subsidios.push({
+          descripcion: subsidioMatch[1].trim(),
+          anio: subsidioMatch[2],
+          monto: subsidioMatch[3]
+        });
+      }
+    }
+    
+    // Extraer totales
+    if (cleanLine.includes('SUBTOTAL MONTO CARGOS:')) {
+      const montoMatch = cleanLine.match(/\$\s*[\d,]+\.\d{2}/);
+      if (montoMatch) {
+        financialData.totales.subtotalCargos = montoMatch[0];
+      }
+    }
+    
+    if (cleanLine.includes('SUBTOTAL MONTO SUBSIDIO:')) {
+      const montoMatch = cleanLine.match(/\$\s*[\d,]+\.\d{2}/);
+      if (montoMatch) {
+        financialData.totales.subtotalSubsidio = montoMatch[0];
+      }
+    }
+    
+    if (cleanLine.includes('TOTAL A PAGAR:')) {
+      const montoMatch = cleanLine.match(/\$\s*[\d,]+\.\d{2}/);
+      if (montoMatch) {
+        financialData.totales.totalAPagar = montoMatch[0];
+      }
+    }
+  }
 }
 
 // Middleware para verificar solicitudes simultáneas
@@ -619,10 +431,10 @@ function checkSimultaneousRequests(req, res, next) {
   next();
 }
 
-// Endpoints de la API (mantener igual que antes)
+// Endpoints de la API
 app.get('/', (req, res) => {
   res.json({
-    message: 'API de consulta de estado de cuenta vehicular - EXTRACCIÓN FORZADA',
+    message: 'API de consulta de estado de cuenta vehicular - ESTRUCTURADA',
     status: 'online',
     proxy: 'activado',
     solicitudes_simultaneas: '1 máximo',
@@ -632,8 +444,32 @@ app.get('/', (req, res) => {
       consulta: 'GET /consulta?placa=ABC123',
       consultaPost: 'POST /consulta con JSON body { "placa": "ABC123" }',
       health: 'GET /health',
-      consola: 'GET /consulta-consola/:placa',
-      desglose: 'GET /desglose/:placa'
+      consola: 'GET /consulta-consola/:placa'
+    },
+    ejemplo_respuesta: {
+      "placa": "SVB133B",
+      "vehiculo": {
+        "marca": "CHIREY",
+        "modelo": "2024",
+        "linea": "CHIREY",
+        "tipo": "TIGGO 2 PRO LUXURY",
+        "color": "NEGRO MEDIANOCHE",
+        "niv": "************13110"
+      },
+      "tieneAdeudos": true,
+      "cargos": [
+        {"descripcion": "REFRENDO PTE.AÑO", "anio": "2026", "monto": "$3,960.00"},
+        {"descripcion": "DONATIVOS PARA CRUZ ROJA", "anio": "2026", "monto": "$20.00"},
+        {"descripcion": "DONATIVOS PARA PAT. DE BOMBEROS", "anio": "2026", "monto": "$20.00"}
+      ],
+      "subsidios": [
+        {"descripcion": "SUBSIDIO REFRENDO PRONTO PAGO", "anio": "2026", "monto": "-$198.00"}
+      ],
+      "totales": {
+        "subtotalCargos": "$4,000.00",
+        "subtotalSubsidio": "-$198.00",
+        "totalAPagar": "$3,802.00"
+      }
     }
   });
 });
@@ -646,7 +482,7 @@ app.get('/health', (req, res) => {
     procesando: isProcessing,
     cola: requestQueue,
     service: 'consulta-vehicular-api',
-    version: '2.0 - Extracción forzada'
+    version: '3.0 - Estructurada'
   });
 });
 
@@ -673,7 +509,7 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
     }
     
     const startTime = Date.now();
-    console.log(`\n🚀 INICIANDO CONSULTA FORZADA PARA PLACA: ${placaLimpia}`);
+    console.log(`\n🚀 INICIANDO CONSULTA ESTRUCTURADA PARA PLACA: ${placaLimpia}`);
     console.log(`🔗 Usando proxy: ${PROXY_CONFIG.server}`);
     
     const resultados = await runAutomation(placaLimpia);
@@ -684,17 +520,18 @@ app.get('/consulta', checkSimultaneousRequests, async (req, res) => {
       tiempoConsulta: `${tiempo} segundos`,
       consultadoEn: new Date().toISOString(),
       metadata: {
-        metodo: 'Extracción forzada v2.0',
+        metodo: 'Extracción estructurada v3.0',
         proxyUtilizado: PROXY_CONFIG.server,
         userAgent: 'Chrome 120'
       }
     };
     
     console.log(`✅ Consulta completada en ${tiempo} segundos`);
-    console.log(`📊 Datos encontrados:`);
-    console.log(`   • Info vehículo: ${resultados.vehiculo.length > 1 ? 'Sí' : 'No'}`);
-    console.log(`   • Cargos anuales: ${resultados.desgloseCompleto.cargosPorAnio.length}`);
-    console.log(`   • Montos totales: $${resultados.desgloseCompleto.calculos.totalCalculado.toFixed(2)}`);
+    console.log(`📊 Datos extraídos:`);
+    console.log(`   • Vehículo: ${Object.keys(resultados.vehiculo).length > 0 ? 'Sí' : 'No'}`);
+    console.log(`   • Cargos: ${resultados.cargos.length}`);
+    console.log(`   • Subsidios: ${resultados.subsidios.length}`);
+    console.log(`   • Total a pagar: ${resultados.totales.totalAPagar || 'No disponible'}`);
     
     res.json(respuesta);
     
@@ -736,7 +573,7 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
     }
     
     const startTime = Date.now();
-    console.log(`\n🚀 INICIANDO CONSULTA FORZADA PARA PLACA: ${placaLimpia}`);
+    console.log(`\n🚀 INICIANDO CONSULTA ESTRUCTURADA PARA PLACA: ${placaLimpia}`);
     
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -744,11 +581,7 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
     const respuesta = {
       ...resultados,
       tiempoConsulta: `${tiempo} segundos`,
-      consultadoEn: new Date().toISOString(),
-      metadata: {
-        metodo: 'Extracción forzada v2.0',
-        proxyUtilizado: PROXY_CONFIG.server
-      }
+      consultadoEn: new Date().toISOString()
     };
     
     console.log(`✅ Consulta completada en ${tiempo} segundos`);
@@ -768,81 +601,94 @@ app.post('/consulta', checkSimultaneousRequests, async (req, res) => {
   }
 });
 
-// Endpoint para desglose detallado
-app.get('/desglose/:placa', checkSimultaneousRequests, async (req, res) => {
+// Endpoint para formato de consola
+app.get('/consulta-consola/:placa', checkSimultaneousRequests, async (req, res) => {
   try {
     const { placa } = req.params;
     
     if (!placa) {
       isProcessing = false;
       requestQueue--;
-      return res.status(400).json({
-        error: 'Placa requerida. Ejemplo: /desglose/ABC123'
-      });
+      return res.status(400).send('Error: Placa requerida\n');
     }
     
     const placaLimpia = placa.trim().toUpperCase().replace(/\s+/g, '');
     const startTime = Date.now();
     
-    console.log(`\n🔍 INICIANDO DESGLOSE FORZADO PARA PLACA: ${placaLimpia}`);
+    console.log(`\nIniciando consulta estructurada para placa: ${placaLimpia}`);
     
     const resultados = await runAutomation(placaLimpia);
     const tiempo = ((Date.now() - startTime) / 1000).toFixed(2);
     
-    // Formatear respuesta para desglose
-    const respuesta = {
-      placa: resultados.placa,
-      vehiculo: formatVehicleInfo(resultados.vehiculo),
-      desgloseDetallado: {
-        cargosPorAnio: resultados.desgloseCompleto.cargosPorAnio || [],
-        multas: resultados.desgloseCompleto.multas || [],
-        recargos: resultados.desgloseCompleto.recargos || [],
-        derechos: resultados.desgloseCompleto.derechos || [],
-        impuestos: resultados.desgloseCompleto.impuestos || [],
-        subsidios: resultados.desgloseCompleto.subsidios || [],
-        descuentos: resultados.desgloseCompleto.descuentos || [],
-        otrosCargos: resultados.desgloseCompleto.otrosCargos || []
-      },
-      totales: resultados.resumen,
-      tiempoConsulta: `${tiempo} segundos`,
-      consultadoEn: new Date().toISOString(),
-      analisis: {
-        lineasProcesadas: resultados.textoCompleto ? resultados.textoCompleto.split('\n').length : 0,
-        montosEncontrados: resultados.desgloseCompleto.calculos.totalCalculado > 0 ? 'Sí' : 'No'
-      }
-    };
+    // Formatear respuesta para consola
+    let respuesta = '';
+    respuesta += '\n' + '='.repeat(70) + '\n';
+    respuesta += `CONSULTA ESTRUCTURADA PARA PLACA: ${resultados.placa}\n`;
+    respuesta += '='.repeat(70) + '\n';
     
-    res.json(respuesta);
+    respuesta += '\nINFORMACIÓN DEL VEHÍCULO:\n';
+    respuesta += '-'.repeat(40) + '\n';
+    
+    for (const [key, value] of Object.entries(resultados.vehiculo)) {
+      respuesta += `${key.charAt(0).toUpperCase() + key.slice(1).padEnd(10)}: ${value}\n`;
+    }
+    
+    respuesta += `Adeudos pendientes: ${resultados.tieneAdeudos ? 'SÍ' : 'NO'}\n`;
+    
+    // Cargos
+    if (resultados.cargos && resultados.cargos.length > 0) {
+      respuesta += '\nCARGOS DETECTADOS:\n';
+      respuesta += '-'.repeat(60) + '\n';
+      resultados.cargos.forEach((cargo, index) => {
+        respuesta += `${(index + 1).toString().padStart(2)}. ${cargo.descripcion.padEnd(35)} ${cargo.anio} ${cargo.monto.padStart(12)}\n`;
+      });
+    }
+    
+    // Subsidios
+    if (resultados.subsidios && resultados.subsidios.length > 0) {
+      respuesta += '\nSUBSIDIOS DETECTADOS:\n';
+      respuesta += '-'.repeat(60) + '\n';
+      resultados.subsidios.forEach((subsidio, index) => {
+        respuesta += `${(index + 1).toString().padStart(2)}. ${subsidio.descripcion.padEnd(35)} ${subsidio.anio} ${subsidio.monto.padStart(12)}\n`;
+      });
+    }
+    
+    // Totales
+    respuesta += '\n' + '='.repeat(70) + '\n';
+    respuesta += 'RESUMEN FINANCIERO\n';
+    respuesta += '='.repeat(70) + '\n';
+    
+    if (resultados.totales.subtotalCargos) {
+      respuesta += `Subtotal cargos:    ${resultados.totales.subtotalCargos.padStart(15)}\n`;
+    }
+    
+    if (resultados.totales.subtotalSubsidio) {
+      respuesta += `Subtotal subsidio:  ${resultados.totales.subtotalSubsidio.padStart(15)}\n`;
+    }
+    
+    if (resultados.totales.totalAPagar) {
+      respuesta += '-'.repeat(40) + '\n';
+      respuesta += `TOTAL A PAGAR:      ${resultados.totales.totalAPagar.padStart(15)}\n`;
+    }
+    
+    respuesta += `\n⏱️  Tiempo de consulta: ${tiempo} segundos\n`;
+    respuesta += `✅ Proceso completado\n`;
+    
+    res.set('Content-Type', 'text/plain');
+    res.send(respuesta);
     
   } catch (error) {
-    console.error('❌ Error en el desglose:', error);
-    res.status(500).json({
-      error: 'Error en el desglose',
-      message: error.message
-    });
+    console.error('Error en la consulta:', error);
+    res.status(500).send(`Error en la consulta. Verifique:\n1. Conexión a internet\n2. Proxy disponible\n3. Placa correcta\n\nDetalle: ${error.message}\n`);
   } finally {
     isProcessing = false;
     requestQueue--;
+    console.log(`🔄 Sistema liberado. Estado: disponible`);
   }
 });
 
-function formatVehicleInfo(vehicleArray) {
-  if (vehicleArray.length === 1 && vehicleArray[0] === 'No se encontró información del vehículo') {
-    return { mensaje: 'No se encontró información del vehículo' };
-  }
-  
-  const vehicleObj = {};
-  for (let i = 0; i < vehicleArray.length; i += 2) {
-    if (vehicleArray[i] && vehicleArray[i + 1]) {
-      const key = vehicleArray[i].replace(':', '').trim().toLowerCase();
-      vehicleObj[key] = vehicleArray[i + 1];
-    }
-  }
-  return vehicleObj;
-}
-
 app.listen(port, () => {
-  console.log(`🚀 API DE CONSULTA VEHICULAR - EXTRACCIÓN FORZADA`);
+  console.log(`🚀 API DE CONSULTA VEHICULAR - ESTRUCTURADA`);
   console.log(`📡 Puerto: ${port}`);
   console.log(`🌐 Proxy: ${PROXY_CONFIG.server}`);
   console.log(`📧 Email: ${EMAIL}`);
@@ -850,13 +696,12 @@ app.listen(port, () => {
   console.log(`\n✅ ENDPOINTS DISPONIBLES:`);
   console.log(`   GET  /consulta?placa=ABC123`);
   console.log(`   POST /consulta`);
-  console.log(`   GET  /desglose/ABC123`);
+  console.log(`   GET  /consulta-consola/ABC123`);
   console.log(`   GET  /health`);
   console.log(`   GET  /`);
-  console.log(`\n🔍 SISTEMA DE EXTRACCIÓN FORZADA:`);
-  console.log(`   • Extracción agresiva de montos`);
-  console.log(`   • Búsqueda por patrones de años`);
-  console.log(`   • Análisis de texto completo`);
-  console.log(`   • Categorización inteligente`);
-  console.log(`   • Debug de HTML disponible`);
+  console.log(`\n🔍 SISTEMA DE EXTRACCIÓN ESTRUCTURADA:`);
+  console.log(`   • Información específica del vehículo`);
+  console.log(`   • Tablas de cargos y subsidios`);
+  console.log(`   • Total a pagar exacto`);
+  console.log(`   • Formato JSON limpio y ordenado`);
 });
