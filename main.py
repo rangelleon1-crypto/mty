@@ -1,110 +1,146 @@
-import time
-import base64
-import requests
-import random
-import os
-from fastapi import FastAPI, HTTPException
-from playwright.sync_api import sync_playwright
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel
+from typing import Optional
+import uuid
+import asyncio
+from datetime import datetime
+import json
+from automation import run_automation
 
-app = FastAPI()
+app = FastAPI(
+    title="ICVNL API",
+    description="API para consultar estado de cuenta de vehículos en ICVNL",
+    version="1.0.0"
+)
 
-# --- CONFIGURACIÓN ---
-API_KEY_2CAPTCHA = 'a5a8c9ec5df7da6ff61efb8a6780ff60'
-PROXY_HOST = "proxy.smartproxy.net"
-PROXY_PORT = "3120"
-PROXY_USER = "smart-acbga3s2e8o0_area-CA"
-PROXY_PASS = "VGp2kCrlWmUem0b0"
+# Modelo para las solicitudes
+class ConsultaRequest(BaseModel):
+    placa: str
+    email: Optional[str] = "shshsghs67@gmail.com"
 
-proxies_dict = {
-    "http": f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}",
-    "https": f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}",
-}
+# Almacenamiento temporal de resultados (en producción usar Redis/DB)
+results_db = {}
 
-def human_delay(min_ms=1000, max_ms=3000):
-    time.sleep(random.uniform(min_ms, max_ms) / 1000)
+@app.get("/")
+async def root():
+    return {
+        "message": "ICVNL API - Consulta de estado de cuenta",
+        "endpoints": {
+            "POST /consultar": "Inicia una consulta",
+            "GET /resultado/{job_id}": "Obtiene resultado de consulta"
+        },
+        "status": "operativo"
+    }
 
-def human_type(element, text):
-    for char in text:
-        element.type(char, delay=random.uniform(70, 150))
+@app.post("/consultar")
+async def iniciar_consulta(request: ConsultaRequest, background_tasks: BackgroundTasks):
+    """
+    Inicia una consulta para una placa específica
+    """
+    job_id = str(uuid.uuid4())
+    
+    # Validar placa
+    if not request.placa or len(request.placa) < 5:
+        raise HTTPException(status_code=400, detail="Placa inválida")
+    
+    # Guardar trabajo en progreso
+    results_db[job_id] = {
+        "status": "processing",
+        "placa": request.placa,
+        "email": request.email,
+        "started_at": datetime.now().isoformat(),
+        "result": None,
+        "error": None
+    }
+    
+    # Ejecutar automatización en segundo plano
+    background_tasks.add_task(
+        execute_automation,
+        job_id=job_id,
+        placa=request.placa,
+        email=request.email
+    )
+    
+    return {
+        "job_id": job_id,
+        "status": "processing",
+        "message": "Consulta iniciada. Use GET /resultado/{job_id} para obtener resultados.",
+        "estimated_time": "1-2 minutos"
+    }
 
-def solve_captcha_api(image_buffer):
+@app.get("/resultado/{job_id}")
+async def obtener_resultado(job_id: str):
+    """
+    Obtiene el resultado de una consulta por job_id
+    """
+    if job_id not in results_db:
+        raise HTTPException(status_code=404, detail="Job ID no encontrado")
+    
+    job_data = results_db[job_id]
+    
+    # Limpiar resultados antiguos (opcional)
+    if job_data["status"] in ["completed", "error"]:
+        # Opcional: puedes programar limpieza periódica
+        pass
+    
+    return {
+        "job_id": job_id,
+        "status": job_data["status"],
+        "placa": job_data["placa"],
+        "started_at": job_data["started_at"],
+        "completed_at": datetime.now().isoformat() if job_data["status"] != "processing" else None,
+        "result": job_data["result"],
+        "error": job_data["error"]
+    }
+
+@app.get("/status")
+async def status():
+    """
+    Estado del sistema
+    """
+    processing = sum(1 for v in results_db.values() if v["status"] == "processing")
+    completed = sum(1 for v in results_db.values() if v["status"] == "completed")
+    
+    return {
+        "total_jobs": len(results_db),
+        "processing": processing,
+        "completed": completed,
+        "system": "operational"
+    }
+
+async def execute_automation(job_id: str, placa: str, email: str):
+    """
+    Ejecuta la automatización en segundo plano
+    """
     try:
-        image_b64 = base64.b64encode(image_buffer).decode('utf-8')
-        payload = {'key': API_KEY_2CAPTCHA, 'method': 'base64', 'body': image_b64, 'json': 1}
-        response = requests.post("http://2captcha.com/in.php", data=payload, proxies=proxies_dict, timeout=30).json()
-        if response.get("status") != 1: return None
-        request_id = response.get("request")
-        for _ in range(30):
-            time.sleep(5)
-            result = requests.get(f"http://2captcha.com/res.php?key={API_KEY_2CAPTCHA}&action=get&id={request_id}&json=1", proxies=proxies_dict).json()
-            if result.get("status") == 1: return result.get("request")
-    except: return None
-    return None
-
-@app.get("/consultar/{placa}")
-def consultar_placa(placa: str):
-    with sync_playwright() as p:
-        # Nota: En Railway/Servidores DEBE ir headless=True
-        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            proxy={"server": f"http://{PROXY_HOST}:{PROXY_PORT}", "username": PROXY_USER, "password": PROXY_PASS}
+        print(f"🔍 Iniciando consulta para placa: {placa}")
+        
+        # Ejecutar la automatización
+        resultado = await asyncio.to_thread(
+            run_automation,
+            placa=placa,
+            email=email
         )
-        page = context.new_page()
-        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-        try:
-            page.goto('https://www.icvnl.gob.mx/EstadodeCuenta', wait_until='networkidle')
-            frame = page.frame_locator('iframe[name="estadodecuenta"]')
-            
-            # --- PARTE 1 ---
-            frame.get_by_role('checkbox', name='Acepto bajo protesta de decir').click()
-            input_placa = frame.get_by_role('textbox', name='Placa')
-            human_type(input_placa, placa)
-            
-            frame.get_by_role('checkbox', name='No soy un robot').click(force=True)
-            img_1 = frame.get_by_role('img', name='Retype the CAPTCHA code from')
-            img_1.wait_for(state="visible", timeout=12000)
-            
-            res1 = solve_captcha_api(img_1.screenshot())
-            if not res1: raise Exception("Error resolviendo CAPTCHA 1")
-            
-            human_type(frame.locator('#txt'), res1)
-            frame.get_by_role('button', name='Consultar').click()
-
-            # --- PARTE 2 ---
-            page.wait_for_load_state("networkidle")
-            frame.get_by_role("textbox", name="Email").wait_for(state="visible", timeout=15000)
-            
-            cb_robot_2 = frame.get_by_role('checkbox', name='No soy un robot')
-            cb_robot_2.click(force=True)
-
-            img_2 = frame.get_by_role('img', name='Retype the CAPTCHA code from')
-            img_2.wait_for(state="visible", timeout=10000)
-            
-            res2 = solve_captcha_api(img_2.screenshot())
-            if not res2: raise Exception("Error resolviendo CAPTCHA 2")
-            
-            input_res2 = frame.locator('input[name="txt2"]')
-            human_type(input_res2, res2)
-
-            input_email = frame.get_by_role('textbox', name='Email')
-            human_type(input_email, 'shshsghs67@gmail.com')
-
-            btn_final = frame.locator('input[type="submit"][value*="estado"], button:has-text("Ver estado de cuenta")').first
-            btn_final.click()
-            
-            time.sleep(5) 
-            resultado = frame.locator("body").inner_text()
-            
-            return {"placa": placa, "datos": resultado}
-
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            browser.close()
+        
+        # Actualizar resultado exitoso
+        results_db[job_id].update({
+            "status": "completed",
+            "result": resultado,
+            "completed_at": datetime.now().isoformat()
+        })
+        
+        print(f"✅ Consulta completada para placa: {placa}")
+        
+    except Exception as e:
+        print(f"❌ Error en consulta para placa {placa}: {str(e)}")
+        
+        # Actualizar resultado con error
+        results_db[job_id].update({
+            "status": "error",
+            "error": str(e),
+            "completed_at": datetime.now().isoformat()
+        })
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
