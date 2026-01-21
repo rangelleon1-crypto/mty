@@ -1,15 +1,17 @@
-# Vehicle Check API
+# ICVNL API
 
-API para verificar el estado de cuenta de vehículos en el sitio del ICVNL.
+API para consultar estado de cuenta de vehículos en ICVNL (Impuesto sobre Tenencia o Uso de Vehículos de Nuevo León).
 
-## Variables de Entorno
+## 🚀 Despliegue en Railway
 
-Crea un archivo `.env` con las siguientes variables:
+1. Crea una cuenta en [Railway.app](https://railway.app)
+2. Conecta tu repositorio de GitHub
+3. Railway detectará automáticamente el proyecto
+4. Las variables de entorno se configurarán automáticamente
 
-```env
-API_KEY_2CAPTCHA=tu_api_key_2captcha
-PROXY_HOST=proxy.smartproxy.net
-PROXY_PORT=3120
-PROXY_USER=tu_usuario_proxy
-PROXY_PASS=tu_password_proxy
+## 📦 Variables de Entorno
+
+```bash
+# En Railway Dashboard → Settings → Variables
 PORT=8000
+WORKERS=2
